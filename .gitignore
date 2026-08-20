@@ -1,0 +1,8 @@
+# This repository is source only -- it is compiled as part of the app's Gradle project, never
+# in place. These entries only guard against build output landing here by accident.
+.cxx/
+build/
+cmake-build-*/
+*.o
+*.so
+*.a

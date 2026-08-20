@@ -1,0 +1,11 @@
+# Line endings are NOT normalised in this repository, deliberately.
+#
+# Git for Windows sets core.autocrlf=true by default, which would rewrite every text file to
+# CRLF on checkout. This repository exists so that anyone can diff it against the upstream
+# projects it vendors, and multimon/PROVENANCE.md promises that multimon/ is byte-identical to
+# upstream multimon-ng apart from eight documented patches. A CRLF checkout would turn that
+# diff into thousands of whitespace hits and hide the real ones.
+#
+# `-text` means: store the bytes as they are, hand them back as they are. multimon/ keeps the
+# LF endings upstream ships; rtl-sdr/ and libusb-andro/ keep the CRLF they were vendored with.
+* -text
