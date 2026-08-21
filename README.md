@@ -1,7 +1,7 @@
-# POCSAG Pager — native (GPL) components
+# RTL-SDR Pager — native (GPL) components
 
 This repository is the **complete corresponding source code** for the GPL-licensed native
-components of the Android application **POCSAG Pager** by ebcTech (Christian Ebner). It exists
+components of the Android application **RTL-SDR Pager** by ebcTech (Christian Ebner). It exists
 to satisfy the written offer under the GNU General Public License, version 2: anyone who
 receives the app binary is entitled to the source of these components.
 
@@ -16,10 +16,10 @@ build system are not GPL-obligated and are not published here.
 
 | Path | What it is |
 |---|---|
-| `CMakeLists.txt` | builds everything below into a single `libpocsag.so` |
-| `pocsagjni.cpp` | the one JNI boundary: entry points from Kotlin, callbacks back into it |
-| `pocsag_sdr.c/.h` | device lifecycle — open from a USB file descriptor, configure, stream, tear down |
-| `pocsag_dsp.c/.h` | IQ → audio: lock-free ring buffer, /64 CIC decimation with droop compensation, FM discriminator, DC blocker |
+| `CMakeLists.txt` | builds everything below into a single `libpager.so` |
+| `pagerjni.cpp` | the one JNI boundary: entry points from Kotlin, callbacks back into it |
+| `pager_sdr.c/.h` | device lifecycle — open from a USB file descriptor, configure, stream, tear down |
+| `pager_dsp.c/.h` | IQ → audio: lock-free ring buffer, /64 CIC decimation with droop compensation, FM discriminator, DC blocker |
 | `multimon_bridge.c/.h` | the host glue multimon-ng expects from its main program (upstream's `unixinput.c`), plus the three demodulator states and the audio sink |
 | `librtlsdr_andro.c/.h` | `rtlsdr_open2(dev, fd)`: the Android file-descriptor bridge into librtlsdr |
 | `multimon/` | multimon-ng's POCSAG decoder — see `multimon/PROVENANCE.md` |
@@ -53,10 +53,10 @@ channels and nothing in the signal says which is in use until it decodes.
 | `multimon/cJSON.c`, `multimon/cJSON.h` | MIT — © 2009-2017 Dave Gamble and cJSON contributors |
 | librtlsdr (`rtl-sdr/`) | GPL-2.0-only — © 2012-2024 Steve Markgraf, Osmocom, RTL-SDR Blog contributors |
 | libusb (`libusb-andro/`) | LGPL-2.1-only — © libusb contributors |
-| EBC integration layer (`pocsagjni.cpp`, `pocsag_sdr.c`, `pocsag_dsp.c`, `multimon_bridge.c`, `librtlsdr_andro.c`, `CMakeLists.txt`, and the Android patches to the above) | GPL-2.0-only — © 2026 Christian Ebner |
+| EBC integration layer (`pagerjni.cpp`, `pager_sdr.c`, `pager_dsp.c`, `multimon_bridge.c`, `librtlsdr_andro.c`, `CMakeLists.txt`, and the Android patches to the above) | GPL-2.0-only — © 2026 Christian Ebner |
 
 `LICENSE` is the GPL-2 text. Each vendored tree keeps its own `COPYING` where upstream shipped
-one. The IQ-to-audio DSP in `pocsag_dsp.c` derives from `rtl_fm` (Kyle Keen, GPL-2.0) by way of
+one. The IQ-to-audio DSP in `pager_dsp.c` derives from `rtl_fm` (Kyle Keen, GPL-2.0) by way of
 `rtl_ais`.
 
 ## Local modifications
