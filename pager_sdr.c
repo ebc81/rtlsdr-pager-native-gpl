@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-only
  *
- * pocsag_sdr.c -- RTL-SDR device lifecycle for the POCSAG receiver.
+ * pager_sdr.c -- RTL-SDR device lifecycle for the pager receiver.
  *
  * Copyright (C) 2026 Christian Ebner / ebcTech
  *
@@ -10,11 +10,11 @@
  *
  * The device is tuned DIRECTLY to the channel -- there is no NCO or channel offset. POCSAG
  * needs about 12.5 kHz of bandwidth out of the 1.4112 MS/s we capture, so the decimator in
- * pocsag_dsp.c does all the filtering.
+ * pager_dsp.c does all the filtering.
  */
 
-#include "pocsag_sdr.h"
-#include "pocsag_dsp.h"
+#include "pager_sdr.h"
+#include "pager_dsp.h"
 #include "multimon_bridge.h"
 #include "librtlsdr_andro.h"
 
@@ -26,7 +26,7 @@
 #include <time.h>
 #include <unistd.h>
 
-#define TAG "POCSAG_SDR"
+#define TAG "PAGER_SDR"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO,  TAG, __VA_ARGS__)
 #define LOGW(...) __android_log_print(ANDROID_LOG_WARN,  TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, TAG, __VA_ARGS__)
@@ -36,8 +36,8 @@
  * 12 transfers in flight. At 1.4112 MS/s (2.8224 MB/s) that is one callback about every
  * 93 ms, which keeps the per-callback DSP burst small enough to never starve the USB queue.
  */
-#define POCSAG_BUF_LENGTH       (16 * 16384)
-#define POCSAG_ASYNC_BUF_NUMBER 12
+#define PAGER_BUF_LENGTH       (16 * 16384)
+#define PAGER_ASYNC_BUF_NUMBER 12
 
 /* ---- Session state ------------------------------------------------------------------ */
 /*
@@ -54,7 +54,7 @@ static volatile int g_stop_requested = 0;
 static uint64_t g_total_samples = 0;
 static double g_next_stat_time = 0.0;
 static int g_peak_mag = 0;
-static int g_dev_state = POCSAG_DEV_STOPPED;
+static int g_dev_state = PAGER_DEV_STOPPED;
 static uint64_t g_ring_drops = 0;
 
 /* Demodulator thread: drains the ring the USB callback fills. */
@@ -108,7 +108,7 @@ static void rtlsdr_callback(unsigned char *buf, uint32_t len, void *ctx)
 
     if (g_total_samples == 0) {
         LOGI("first IQ block: %u bytes", len);
-        set_dev_state(POCSAG_DEV_STARTED);
+        set_dev_state(PAGER_DEV_STARTED);
     }
     g_total_samples += len / 2;
 
@@ -117,7 +117,7 @@ static void rtlsdr_callback(unsigned char *buf, uint32_t len, void *ctx)
      * doing the filtering here would stall libusb's transfer resubmission and the dongle
      * would start dropping samples.
      */
-    if (pocsag_dsp_push(buf, len) == 0)
+    if (pager_dsp_push(buf, len) == 0)
         g_ring_drops++;
 
     /*
@@ -173,7 +173,7 @@ static void *demod_thread_fn(void *arg)
     (void)arg;
     LOGI("demodulator thread started");
     while (!g_demod_exit) {
-        if (pocsag_dsp_pump() == 0) {
+        if (pager_dsp_pump() == 0) {
             /* usleep and not a condition variable: signalling a condvar from the USB
              * callback would put a lock in the one place that must never block. */
             usleep(5000);
@@ -182,7 +182,7 @@ static void *demod_thread_fn(void *arg)
     /* Drain whatever is left so a message that finished arriving just before Stop is not
      * thrown away mid-batch. Bounded so a stuck producer cannot keep us here. */
     int drained = 0;
-    while (pocsag_dsp_pump() > 0 && ++drained < 256) {
+    while (pager_dsp_pump() > 0 && ++drained < 256) {
         /* keep going */
     }
     LOGI("demodulator thread finished (%d trailing blocks drained)", drained);
@@ -191,7 +191,7 @@ static void *demod_thread_fn(void *arg)
 
 /* ---- Configuration ------------------------------------------------------------------ */
 
-static int configure_device(rtlsdr_dev_t *dev, const pocsag_sdr_config_t *cfg)
+static int configure_device(rtlsdr_dev_t *dev, const pager_sdr_config_t *cfg)
 {
     int r;
 
@@ -206,13 +206,13 @@ static int configure_device(rtlsdr_dev_t *dev, const pocsag_sdr_config_t *cfg)
             LOGI("ppm correction = %d", cfg->ppm);
     }
 
-    r = rtlsdr_set_sample_rate(dev, POCSAG_RTL_SAMPLE_RATE);
+    r = rtlsdr_set_sample_rate(dev, PAGER_RTL_SAMPLE_RATE);
     if (r < 0) {
-        LOGE("set_sample_rate(%d) failed: %d", POCSAG_RTL_SAMPLE_RATE, r);
-        return POCSAG_ERR_SET_SAMPLERATE;
+        LOGE("set_sample_rate(%d) failed: %d", PAGER_RTL_SAMPLE_RATE, r);
+        return PAGER_ERR_SET_SAMPLERATE;
     }
     LOGI("sample rate = %d S/s (audio %d x %d)",
-         POCSAG_RTL_SAMPLE_RATE, POCSAG_AUDIO_RATE, POCSAG_DECIMATION);
+         PAGER_RTL_SAMPLE_RATE, PAGER_AUDIO_RATE, PAGER_DECIMATION);
 
     /*
      * Narrow the tuner's own IF filter where the tuner supports it (R820T/R828D do). This is
@@ -227,7 +227,7 @@ static int configure_device(rtlsdr_dev_t *dev, const pocsag_sdr_config_t *cfg)
     r = rtlsdr_set_center_freq(dev, cfg->frequency_hz);
     if (r < 0) {
         LOGE("set_center_freq(%u) failed: %d", cfg->frequency_hz, r);
-        return POCSAG_ERR_SET_FREQ;
+        return PAGER_ERR_SET_FREQ;
     }
     LOGI("centre frequency = %u Hz", cfg->frequency_hz);
 
@@ -235,14 +235,14 @@ static int configure_device(rtlsdr_dev_t *dev, const pocsag_sdr_config_t *cfg)
         r = rtlsdr_set_tuner_gain_mode(dev, 0);   /* 0 = automatic */
         if (r < 0) {
             LOGE("set_tuner_gain_mode(auto) failed: %d", r);
-            return POCSAG_ERR_SET_GAIN;
+            return PAGER_ERR_SET_GAIN;
         }
         LOGI("tuner gain = auto");
     } else {
         r = rtlsdr_set_tuner_gain_mode(dev, 1);   /* 1 = manual */
         if (r < 0) {
             LOGE("set_tuner_gain_mode(manual) failed: %d", r);
-            return POCSAG_ERR_SET_GAIN;
+            return PAGER_ERR_SET_GAIN;
         }
         /* Snap to the nearest gain the tuner actually implements. Passing an unsupported
          * value leaves librtlsdr picking for us, which makes the UI a lie. */
@@ -276,7 +276,7 @@ static int configure_device(rtlsdr_dev_t *dev, const pocsag_sdr_config_t *cfg)
         }
         if (r < 0) {
             LOGE("set_tuner_gain failed: %d", r);
-            return POCSAG_ERR_SET_GAIN;
+            return PAGER_ERR_SET_GAIN;
         }
         LOGI("tuner gain = %.1f dB (manual)", cfg->gain_tenth_db / 10.0);
     }
@@ -297,55 +297,55 @@ static int configure_device(rtlsdr_dev_t *dev, const pocsag_sdr_config_t *cfg)
     r = rtlsdr_reset_buffer(dev);
     if (r < 0) {
         LOGE("reset_buffer failed: %d", r);
-        return POCSAG_ERR_RESET_BUFFER;
+        return PAGER_ERR_RESET_BUFFER;
     }
 
-    return POCSAG_OK;
+    return PAGER_OK;
 }
 
 /* ---- Public API --------------------------------------------------------------------- */
 
-int pocsag_sdr_run(const pocsag_sdr_config_t *cfg)
+int pager_sdr_run(const pager_sdr_config_t *cfg)
 {
     if (!cfg || cfg->fd <= 0) {
         LOGE("no USB file descriptor (fd=%d)", cfg ? cfg->fd : -1);
-        return POCSAG_ERR_BAD_FD;
+        return PAGER_ERR_BAD_FD;
     }
 
     pthread_mutex_lock(&g_run_mutex);
     if (g_running) {
         pthread_mutex_unlock(&g_run_mutex);
         LOGE("a session is already running");
-        return POCSAG_ERR_ALREADY;
+        return PAGER_ERR_ALREADY;
     }
     g_running = 1;
     g_stop_requested = 0;
     g_total_samples = 0;
     g_peak_mag = 0;
     g_next_stat_time = 0.0;
-    g_dev_state = POCSAG_DEV_STOPPED;
+    g_dev_state = PAGER_DEV_STOPPED;
     g_ring_drops = 0;
     g_demod_exit = 0;
     g_demod_thread_valid = 0;
     pthread_mutex_unlock(&g_run_mutex);
 
-    set_dev_state(POCSAG_DEV_STARTING);
+    set_dev_state(PAGER_DEV_STARTING);
 
-    int result = POCSAG_OK;
+    int result = PAGER_OK;
     rtlsdr_dev_t *dev = NULL;
 
     int r = rtlsdr_open2(&dev, cfg->fd);
     if (r < 0 || dev == NULL) {
         LOGE("rtlsdr_open2(fd=%d) failed: %d", cfg->fd, r);
-        result = POCSAG_ERR_OPEN;
+        result = PAGER_ERR_OPEN;
         goto done;
     }
 
     result = configure_device(dev, cfg);
-    if (result != POCSAG_OK)
+    if (result != PAGER_OK)
         goto close_dev;
 
-    /* Publish the handle only once the device is fully configured: pocsag_sdr_stop() uses it
+    /* Publish the handle only once the device is fully configured: pager_sdr_stop() uses it
      * to cancel, and cancelling a half-configured device is how you get a wedged dongle. */
     pthread_mutex_lock(&g_run_mutex);
     g_dev = dev;
@@ -358,29 +358,29 @@ int pocsag_sdr_run(const pocsag_sdr_config_t *cfg)
         goto unpublish;
     }
 
-    if (pocsag_dsp_init() < 0) {
-        result = POCSAG_ERR_DSP_INIT;
+    if (pager_dsp_init() < 0) {
+        result = PAGER_ERR_DSP_INIT;
         goto unpublish;
     }
-    /* Before the thread that feeds it exists: pocsag_audio_sink() walks the demodulator state
+    /* Before the thread that feeds it exists: pager_audio_sink() walks the demodulator state
      * this sets up, so the decoder has to be ready before the first block can arrive. */
     ebc_multimon_init(cfg);
     if (pthread_create(&g_demod_thread, NULL, demod_thread_fn, NULL) != 0) {
         LOGE("could not create the demodulator thread");
         ebc_multimon_deinit();
-        pocsag_dsp_deinit();
-        result = POCSAG_ERR_DSP_INIT;
+        pager_dsp_deinit();
+        result = PAGER_ERR_DSP_INIT;
         goto unpublish;
     }
     g_demod_thread_valid = 1;
 
-    set_dev_state(POCSAG_DEV_GRACE);
+    set_dev_state(PAGER_DEV_GRACE);
     LOGI("entering rtlsdr_read_async (%d buffers x %d bytes)",
-         POCSAG_ASYNC_BUF_NUMBER, POCSAG_BUF_LENGTH);
+         PAGER_ASYNC_BUF_NUMBER, PAGER_BUF_LENGTH);
 
     /* BLOCKS until cancelled, or until libusb gives up on an unplugged device. */
     r = rtlsdr_read_async(dev, rtlsdr_callback, NULL,
-                          POCSAG_ASYNC_BUF_NUMBER, POCSAG_BUF_LENGTH);
+                          PAGER_ASYNC_BUF_NUMBER, PAGER_BUF_LENGTH);
     if (r < 0)
         LOGW("rtlsdr_read_async returned %d", r);
 
@@ -392,9 +392,9 @@ int pocsag_sdr_run(const pocsag_sdr_config_t *cfg)
      * silent return to idle.
      */
     if (!g_stop_requested && g_total_samples == 0)
-        result = POCSAG_ERR_NO_SAMPLES;
+        result = PAGER_ERR_NO_SAMPLES;
     else if (!g_stop_requested && r < 0)
-        result = POCSAG_ERR_READ_ASYNC;
+        result = PAGER_ERR_READ_ASYNC;
 
 unpublish:
     /*
@@ -409,7 +409,7 @@ unpublish:
     }
     /* Strictly after the join: this walks the same demodulator state the audio sink writes. */
     ebc_multimon_deinit();
-    pocsag_dsp_deinit();
+    pager_dsp_deinit();
 
     pthread_mutex_lock(&g_run_mutex);
     g_dev = NULL;
@@ -427,14 +427,14 @@ close_dev:
     LOGI("device closed");
 
 done:
-    set_dev_state(POCSAG_DEV_STOPPED);
+    set_dev_state(PAGER_DEV_STOPPED);
     pthread_mutex_lock(&g_run_mutex);
     g_running = 0;
     pthread_mutex_unlock(&g_run_mutex);
     return result;
 }
 
-void pocsag_sdr_stop(int fast)
+void pager_sdr_stop(int fast)
 {
     g_stop_requested = 1;
 
@@ -465,7 +465,7 @@ void pocsag_sdr_stop(int fast)
     }
 }
 
-int pocsag_sdr_is_running(void)
+int pager_sdr_is_running(void)
 {
     pthread_mutex_lock(&g_run_mutex);
     int running = g_running;

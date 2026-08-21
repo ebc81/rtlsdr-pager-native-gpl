@@ -5,10 +5,25 @@ Commit: `de0585926542687155852db502a9d2861e9acf95` ("Bump version to 1.6.0", 202
 License: GPL-2.0-or-later (`COPYING`), except `bch.c` / `bch.h`, which upstream released into
 the public domain (Unlicense), and `cJSON.c` / `cJSON.h` (MIT).
 
-Only the POCSAG path is vendored. FLEX, AIS, ADS-B, ACARS and the other twenty demodulators
-in the upstream tree are deliberately absent — see AGENTS.md guardrail 5. `unixinput.c` is
-absent too: its host-program duties (configuration globals, logging, output) are taken over by
-`../multimon_bridge.c`.
+Only the POCSAG path is vendored **so far**. AIS, ADS-B, ACARS and the other demodulators in
+the upstream tree are deliberately absent — see AGENTS.md guardrail 5.
+
+FLEX is the one exception to that list: it is **in scope**, as stage 10, and
+`demod_flex_next.c` is merely not vendored yet. Vendoring it needs no change to any file in
+this directory, because the groundwork is already here, byte-identical to upstream:
+
+- `bch.c` / `bch.h` already define `bch_flex_correct()` and `bch_flex_next_correct()` (and the
+  GSC Golay tables). They are dead code in the current binary.
+- `multimon.h` already declares `demod_flex` and `demod_flex_next`, and already carries the
+  `struct Flex *flex` / `struct Flex_Next *flex_next` slots in the `l1` union.
+- Upstream's demod param is `{"FLEX", true, FREQ_SAMP, FILTLEN, …}` — 22050 Hz, float samples,
+  FILTLEN 1 — which is the same audio contract `demod_poc12` uses, so the DSP needs no change.
+
+What it does need: the four `fprintf(stdout, cJSON_PrintUnformatted(…))` sites patched the way
+patches 2–3 patched `pocsag.c`, and `flex_disable_timestamp` defined in `../multimon_bridge.c`.
+
+`unixinput.c` is absent too: its host-program duties (configuration globals, logging, output)
+are taken over by `../multimon_bridge.c`.
 
 Files are stored with LF line endings, as upstream has them, so `diff` against a fresh clone
 shows only the patches below. Everything vendored here is byte-identical to upstream except

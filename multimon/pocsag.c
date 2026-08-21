@@ -87,7 +87,7 @@ extern int json_mode;
  * the JNI boundary is the only way out (AGENTS.md guardrail 2), so every json_mode output site
  * below hands its object to ebc_emit_json() instead of fprintf(stdout).
  *
- * announce_pocsag_message() lives in pocsagjni.cpp. g_pocsag_baud is set by multimon_bridge.c
+ * announce_pocsag_message() lives in pagerjni.cpp. g_pocsag_baud is set by multimon_bridge.c
  * immediately before each demodulator call, so it always names the bit rate of the demodulator
  * whose message is being emitted -- the three run over the same audio, one after the other.
  */

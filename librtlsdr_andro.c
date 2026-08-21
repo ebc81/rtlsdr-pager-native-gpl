@@ -7,9 +7,9 @@
  * Modification 2016 by Christian Ebner <cebner@gmx.at>
  * rtlsdr_open2 base on librtlsdr_andro from Martin Marinov <martintzvetomirov@gmail.com> 2012
  *
- * Vendored into the POCSAG project from rtlsdr433 (which took it from
+ * Vendored into the RTL-SDR Pager project from rtlsdr433 (which took it from
  * RTL_SDR_AIS_Driver). Protocol-independent: it only turns an Android UsbManager file
- * descriptor into an opened rtlsdr_dev_t. Log tag renamed RTL433_USB -> POCSAG_USB;
+ * descriptor into an opened rtlsdr_dev_t. Log tag renamed RTL433_USB -> PAGER_USB;
  * otherwise unchanged.
  */
 
@@ -40,7 +40,7 @@ int rtlsdr_open2(rtlsdr_dev_t **out_dev, int fd)
     uint8_t buf[EEPROM_SIZE];
     int pos;
 
-    __android_log_print(ANDROID_LOG_INFO, "POCSAG_USB",
+    __android_log_print(ANDROID_LOG_INFO, "PAGER_USB",
             "rtlsdr_open2: opening device with fd=%d", fd);
 
     dev = malloc(sizeof(rtlsdr_dev_t));
@@ -53,44 +53,44 @@ int rtlsdr_open2(rtlsdr_dev_t **out_dev, int fd)
     int status = libusb_init(&dev->ctx);
     if (status != LIBUSB_SUCCESS)
     {
-        __android_log_print(ANDROID_LOG_ERROR, "POCSAG_USB",
+        __android_log_print(ANDROID_LOG_ERROR, "PAGER_USB",
                 "rtlsdr_open2: libusb_init failed with status=%d", status);
         free(dev);
         return status;
     }
     else if (dev->ctx == NULL)
     {
-        __android_log_write(ANDROID_LOG_ERROR, "POCSAG_USB",
+        __android_log_write(ANDROID_LOG_ERROR, "PAGER_USB",
                 "rtlsdr_open2: libusb_init returned SUCCESS but ctx is NULL");
         free(dev);
         return EXIT_TEST_RTLSDR_OPEN1;
     }
-    __android_log_write(ANDROID_LOG_INFO, "POCSAG_USB", "rtlsdr_open2: libusb_init OK");
+    __android_log_write(ANDROID_LOG_INFO, "PAGER_USB", "rtlsdr_open2: libusb_init OK");
 
     dev->dev_lost = 1;
 
     status = libusb_wrap_sys_device(dev->ctx, fd, &dev->devh);
     if (status != LIBUSB_SUCCESS)
     {
-        __android_log_print(ANDROID_LOG_ERROR, "POCSAG_USB",
+        __android_log_print(ANDROID_LOG_ERROR, "PAGER_USB",
                 "rtlsdr_open2: libusb_wrap_sys_device failed with status=%d", status);
         libusb_exit(dev->ctx);
         free(dev);
         return status;
     }
-    __android_log_write(ANDROID_LOG_INFO, "POCSAG_USB",
+    __android_log_write(ANDROID_LOG_INFO, "PAGER_USB",
             "rtlsdr_open2: libusb_wrap_sys_device OK");
 
     r = libusb_claim_interface(dev->devh, 0);
     if (r < 0) {
-        __android_log_print(ANDROID_LOG_ERROR, "POCSAG_USB",
+        __android_log_print(ANDROID_LOG_ERROR, "PAGER_USB",
                 "rtlsdr_open2: libusb_claim_interface error %d", r);
         libusb_close(dev->devh);
         libusb_exit(dev->ctx);
         free(dev);
         return EXIT_TEST_RTLSDR_OPEN2;
     }
-    __android_log_write(ANDROID_LOG_INFO, "POCSAG_USB",
+    __android_log_write(ANDROID_LOG_INFO, "PAGER_USB",
             "rtlsdr_open2: interface claimed OK");
 
     dev->rtl_xtal = DEF_RTL_XTAL_FREQ;
@@ -113,44 +113,44 @@ int rtlsdr_open2(rtlsdr_dev_t **out_dev, int fd)
 
     reg = rtlsdr_i2c_read_reg(dev, E4K_I2C_ADDR, E4K_CHECK_ADDR);
     if (reg == E4K_CHECK_VAL) {
-        __android_log_write(ANDROID_LOG_INFO, "POCSAG_USB", "Tuner detected: Elonics E4000");
+        __android_log_write(ANDROID_LOG_INFO, "PAGER_USB", "Tuner detected: Elonics E4000");
         dev->tuner_type = RTLSDR_TUNER_E4000;
         goto found;
     }
 
     reg = rtlsdr_i2c_read_reg(dev, FC0013_I2C_ADDR, FC0013_CHECK_ADDR);
     if (reg == FC0013_CHECK_VAL) {
-        __android_log_write(ANDROID_LOG_INFO, "POCSAG_USB", "Tuner detected: Fitipower FC0013");
+        __android_log_write(ANDROID_LOG_INFO, "PAGER_USB", "Tuner detected: Fitipower FC0013");
         dev->tuner_type = RTLSDR_TUNER_FC0013;
         goto found;
     }
 
     reg = rtlsdr_i2c_read_reg(dev, R820T_I2C_ADDR, R82XX_CHECK_ADDR);
     if (reg == R82XX_CHECK_VAL) {
-        __android_log_write(ANDROID_LOG_INFO, "POCSAG_USB", "Tuner detected: Rafael Micro R820T");
+        __android_log_write(ANDROID_LOG_INFO, "PAGER_USB", "Tuner detected: Rafael Micro R820T");
         dev->tuner_type = RTLSDR_TUNER_R820T;
         goto found;
     }
 
     reg = rtlsdr_i2c_read_reg(dev, R828D_I2C_ADDR, R82XX_CHECK_ADDR);
     if (reg == R82XX_CHECK_VAL) {
-        __android_log_write(ANDROID_LOG_INFO, "POCSAG_USB", "Tuner detected: Rafael Micro R828D");
+        __android_log_write(ANDROID_LOG_INFO, "PAGER_USB", "Tuner detected: Rafael Micro R828D");
         if (rtlsdr_check_dongle_model(dev, "RTLSDRBlog", "Blog V4"))
-            __android_log_write(ANDROID_LOG_INFO, "POCSAG_USB", "RTL-SDR Blog V4 variant");
+            __android_log_write(ANDROID_LOG_INFO, "PAGER_USB", "RTL-SDR Blog V4 variant");
         dev->tuner_type = RTLSDR_TUNER_R828D;
         goto found;
     }
 
     reg = rtlsdr_i2c_read_reg(dev, FC2580_I2C_ADDR, FC2580_CHECK_ADDR);
     if ((reg & 0x7f) == FC2580_CHECK_VAL) {
-        __android_log_write(ANDROID_LOG_INFO, "POCSAG_USB", "Tuner detected: FCI 2580");
+        __android_log_write(ANDROID_LOG_INFO, "PAGER_USB", "Tuner detected: FCI 2580");
         dev->tuner_type = RTLSDR_TUNER_FC2580;
         goto found;
     }
 
     reg = rtlsdr_i2c_read_reg(dev, FC0012_I2C_ADDR, FC0012_CHECK_ADDR);
     if (reg == FC0012_CHECK_VAL) {
-        __android_log_write(ANDROID_LOG_INFO, "POCSAG_USB", "Tuner detected: Fitipower FC0012");
+        __android_log_write(ANDROID_LOG_INFO, "PAGER_USB", "Tuner detected: Fitipower FC0012");
         dev->tuner_type = RTLSDR_TUNER_FC0012;
         goto found;
     }
@@ -201,7 +201,7 @@ found:
     rtlsdr_set_i2c_repeater(dev, 0);
     *out_dev = dev;
 
-    __android_log_print(ANDROID_LOG_INFO, "POCSAG_USB",
+    __android_log_print(ANDROID_LOG_INFO, "PAGER_USB",
             "rtlsdr_open2: SUCCESS — tuner_type=%d force_bt=%d",
             dev->tuner_type, dev->force_bt);
     return 0;

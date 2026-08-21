@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-only
  *
- * pocsag_dsp.c -- IQ to POCSAG audio.
+ * pager_dsp.c -- IQ to pager audio.
  *
  * Copyright (C) 2026 Christian Ebner / ebcTech
  * Derived from rtl_fm, Copyright (C) 2012 by Kyle Keen <keenerd@gmail.com>, by way of
@@ -18,7 +18,7 @@
  *     -> polar_disc_fast(): FM discriminator, z[n] * conj(z[n-1]) then fast_atan2
  *          => 22_050 S/s real, pi scaled to 1<<14
  *     -> dc_block_filter()
- *     -> int16 -> float, handed to pocsag_audio_sink()
+ *     -> int16 -> float, handed to pager_audio_sink()
  *
  * Why 1_411_200: multimon-ng's poc5/poc12/poc24 demodulators hard-code FREQ_SAMP 22050, and
  * 22050 * 64 == 1411200. 64 is a power of two, so the whole rate change is CIC decimation with
@@ -47,8 +47,8 @@
  * is to mistune deliberately by 3-4 kHz and confirm messages still decode.
  */
 
-#include "pocsag_dsp.h"
-#include "pocsag_sdr.h"
+#include "pager_dsp.h"
+#include "pager_sdr.h"
 
 #include <android/log.h>
 #include <math.h>
@@ -56,7 +56,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define TAG "POCSAG_DSP"
+#define TAG "PAGER_DSP"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO,  TAG, __VA_ARGS__)
 #define LOGW(...) __android_log_print(ANDROID_LOG_WARN,  TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, TAG, __VA_ARGS__)
@@ -71,7 +71,7 @@
  */
 #define DSP_BLOCK_BYTES     65536
 #define DSP_BLOCK_PAIRS     (DSP_BLOCK_BYTES / 2)
-#define DSP_AUDIO_PER_BLOCK (DSP_BLOCK_PAIRS / POCSAG_DECIMATION)
+#define DSP_AUDIO_PER_BLOCK (DSP_BLOCK_PAIRS / PAGER_DECIMATION)
 
 /*
  * 4 MB ring, about 1.4 seconds at 2.8 MB/s. Generous on purpose: the demodulator thread can be
@@ -79,7 +79,7 @@
  */
 #define RING_BYTES (4 * 1024 * 1024)
 
-/* Number of /2 CIC passes. 2^6 == 64 == POCSAG_DECIMATION. */
+/* Number of /2 CIC passes. 2^6 == 64 == PAGER_DECIMATION. */
 #define DECIM_PASSES 6
 
 /*
@@ -301,9 +301,9 @@ static void dc_block(int16_t *samples, int len)
 
 /* ---- Lifecycle ---------------------------------------------------------------------- */
 
-int pocsag_dsp_init(void)
+int pager_dsp_init(void)
 {
-    pocsag_dsp_deinit();
+    pager_dsp_deinit();
 
     g_ring = malloc(RING_BYTES);
     g_iq = malloc(sizeof(int16_t) * DSP_BLOCK_PAIRS * 2);
@@ -312,7 +312,7 @@ int pocsag_dsp_init(void)
 
     if (!g_ring || !g_iq || !g_audio || !g_audio_f) {
         LOGE("out of memory setting up the DSP");
-        pocsag_dsp_deinit();
+        pager_dsp_deinit();
         return -1;
     }
 
@@ -332,12 +332,12 @@ int pocsag_dsp_init(void)
 
     g_initialised = 1;
     LOGI("DSP ready: %d S/s IQ -> /%d -> %d S/s audio, %d bytes per block (%d audio samples)",
-         POCSAG_RTL_SAMPLE_RATE, POCSAG_DECIMATION, POCSAG_AUDIO_RATE,
+         PAGER_RTL_SAMPLE_RATE, PAGER_DECIMATION, PAGER_AUDIO_RATE,
          DSP_BLOCK_BYTES, DSP_AUDIO_PER_BLOCK);
     return 0;
 }
 
-void pocsag_dsp_deinit(void)
+void pager_dsp_deinit(void)
 {
     g_initialised = 0;
     free(g_ring);
@@ -352,7 +352,7 @@ void pocsag_dsp_deinit(void)
 
 /* ---- Producer: called on the USB callback thread ------------------------------------ */
 
-uint32_t pocsag_dsp_push(const unsigned char *buf, uint32_t len)
+uint32_t pager_dsp_push(const unsigned char *buf, uint32_t len)
 {
     if (!g_initialised || !buf || len == 0)
         return 0;
@@ -386,7 +386,7 @@ uint32_t pocsag_dsp_push(const unsigned char *buf, uint32_t len)
     return len;
 }
 
-uint64_t pocsag_dsp_overflow_count(void)
+uint64_t pager_dsp_overflow_count(void)
 {
     return atomic_load_explicit(&g_overflow_pairs, memory_order_relaxed);
 }
@@ -417,20 +417,20 @@ static void level_stats(const float *samples, int len)
     }
     window_samples += (uint64_t)len;
 
-    if (window_samples >= (uint64_t)POCSAG_AUDIO_RATE * 5) {
+    if (window_samples >= (uint64_t)PAGER_AUDIO_RATE * 5) {
         double mean = window_sum / (double)window_samples;
         double rms = sqrt(window_sum_sq / (double)window_samples);
         LOGI("audio: rms=%.4f mean=%.5f over %llu samples, ring overflow pairs=%llu "
              "(mean should sit near zero once the DC blocker has settled)",
              rms, mean, (unsigned long long)window_samples,
-             (unsigned long long)pocsag_dsp_overflow_count());
+             (unsigned long long)pager_dsp_overflow_count());
         window_samples = 0;
         window_sum = 0.0;
         window_sum_sq = 0.0;
     }
 }
 
-int pocsag_dsp_pump(void)
+int pager_dsp_pump(void)
 {
     if (!g_initialised)
         return 0;
@@ -465,7 +465,7 @@ int pocsag_dsp_pump(void)
         g_audio_f[i] = (float)g_audio[i] / 32768.0f;
 
     level_stats(g_audio_f, audio_len);
-    pocsag_audio_sink(g_audio_f, audio_len);
+    pager_audio_sink(g_audio_f, audio_len);
     return audio_len;
 }
 
@@ -481,7 +481,7 @@ int pocsag_dsp_pump(void)
  * property of the DSP output, and losing it the moment a real sink appeared would have thrown
  * away the only hardware check for the DC blocker.
  */
-__attribute__((weak)) void pocsag_audio_sink(const float *samples, int len)
+__attribute__((weak)) void pager_audio_sink(const float *samples, int len)
 {
     (void)samples;
     (void)len;

@@ -20,8 +20,8 @@
  * The decoder's own configuration globals (pocsag_mode and friends) are defined by pocsag.c
  * itself -- unixinput.c only declares them extern and assigns them, and so does this file.
  *
- * It also owns the three demodulator states and implements pocsag_audio_sink(), overriding the
- * weak no-op default in pocsag_dsp.c.
+ * It also owns the three demodulator states and implements pager_audio_sink(), overriding the
+ * weak no-op default in pager_dsp.c.
  *
  * ============================================================================
  * Three bit rates, always
@@ -42,7 +42,7 @@
 
 #include "multimon_bridge.h"
 
-#include "pocsag_dsp.h"
+#include "pager_dsp.h"
 #include "multimon/bch.h"
 #include "multimon/multimon.h"
 
@@ -54,7 +54,7 @@
 #include <string.h>
 #include <time.h>
 
-#define TAG "POCSAG_DEC"
+#define TAG "PAGER_DEC"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, TAG, __VA_ARGS__)
 #define LOGW(...) __android_log_print(ANDROID_LOG_WARN, TAG, __VA_ARGS__)
 
@@ -228,7 +228,7 @@ void ebc_multimon_stats(int *sync_count, int *err_ppm)
 
 /* ---- Lifecycle ----------------------------------------------------------------------- */
 
-void ebc_multimon_init(const pocsag_sdr_config_t *cfg)
+void ebc_multimon_init(const pager_sdr_config_t *cfg)
 {
     ebc_multimon_deinit();
 
@@ -326,13 +326,13 @@ void ebc_multimon_deinit(void)
 /* ---- Audio sink ---------------------------------------------------------------------- */
 
 /**
- * Receive one block of POCSAG_AUDIO_RATE float samples from the DSP.
+ * Receive one block of PAGER_AUDIO_RATE float samples from the DSP.
  *
- * Overrides the weak no-op in pocsag_dsp.c; the level statistics stayed behind there, in
- * pocsag_dsp_pump(). Runs on the demodulator thread, and a decoded message reaches Kotlin from
+ * Overrides the weak no-op in pager_dsp.c; the level statistics stayed behind there, in
+ * pager_dsp_pump(). Runs on the demodulator thread, and a decoded message reaches Kotlin from
  * inside this call, by way of pocsag_printmessage() -> announce_pocsag_message().
  */
-void pocsag_audio_sink(const float *samples, int len)
+void pager_audio_sink(const float *samples, int len)
 {
     if (!g_active || !samples || len <= 0)
         return;
@@ -357,7 +357,7 @@ void pocsag_audio_sink(const float *samples, int len)
     }
 
     g_window_samples += len;
-    if (g_window_samples >= POCSAG_AUDIO_RATE) {
+    if (g_window_samples >= PAGER_AUDIO_RATE) {
         publish_error_rate();
         g_window_samples = 0;
     }

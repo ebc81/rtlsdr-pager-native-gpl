@@ -1,11 +1,11 @@
 /* SPDX-License-Identifier: GPL-2.0-only
  *
- * pocsagjni.cpp -- the single JNI boundary between Kotlin and the native POCSAG receiver.
+ * pagerjni.cpp -- the single JNI boundary between Kotlin and the native pager receiver.
  *
  * Copyright (C) 2026 Christian Ebner / ebcTech
  *
  * Nothing else in the native layer touches JNI, and nothing in Kotlin touches native except
- * through eu.ebctech.pocsag.rtlsdr.NativeBridge. See AGENTS.md, guardrail 2.
+ * through eu.ebctech.pagerdecoder.rtlsdr.NativeBridge. See AGENTS.md, guardrail 2.
  *
  * The thread-safety pattern here is not incidental. Callbacks arrive on the libusb transfer
  * thread, which Java knows nothing about, while initNative/releaseNative run on a Kotlin
@@ -24,15 +24,15 @@
 #include <string.h>
 
 extern "C" {
-#include "pocsag_sdr.h"
+#include "pager_sdr.h"
 }
 
-#define TAG "POCSAG_JNI"
+#define TAG "PAGER_JNI"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO,  TAG, __VA_ARGS__)
 #define LOGW(...) __android_log_print(ANDROID_LOG_WARN,  TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, TAG, __VA_ARGS__)
 
-static const char *kBridgeClass = "eu/ebctech/pocsag/rtlsdr/NativeBridge";
+static const char *kBridgeClass = "eu/ebctech/pagerdecoder/rtlsdr/NativeBridge";
 
 static pthread_mutex_t g_jni_mutex = PTHREAD_MUTEX_INITIALIZER;
 static JavaVM *g_javaVm = nullptr;
@@ -165,7 +165,7 @@ extern "C" void announce_signal_stat(int rssi_dbfs, int sync_count, int err_ppm)
 /* ---- Kotlin -> native entry points -------------------------------------------------- */
 
 extern "C" JNIEXPORT jboolean JNICALL
-Java_eu_ebctech_pocsag_rtlsdr_NativeBridge_initNative(JNIEnv *env, jobject /*thiz*/)
+Java_eu_ebctech_pagerdecoder_rtlsdr_NativeBridge_initNative(JNIEnv *env, jobject /*thiz*/)
 {
     if (env->GetJavaVM(&g_javaVm) != JNI_OK || !g_javaVm) {
         LOGE("GetJavaVM failed");
@@ -201,7 +201,7 @@ Java_eu_ebctech_pocsag_rtlsdr_NativeBridge_initNative(JNIEnv *env, jobject /*thi
 }
 
 extern "C" JNIEXPORT jboolean JNICALL
-Java_eu_ebctech_pocsag_rtlsdr_NativeBridge_releaseNative(JNIEnv *env, jobject /*thiz*/)
+Java_eu_ebctech_pagerdecoder_rtlsdr_NativeBridge_releaseNative(JNIEnv *env, jobject /*thiz*/)
 {
     pthread_mutex_lock(&g_jni_mutex);
     jclass old = g_cls;
@@ -216,19 +216,19 @@ Java_eu_ebctech_pocsag_rtlsdr_NativeBridge_releaseNative(JNIEnv *env, jobject /*
 }
 
 extern "C" JNIEXPORT jboolean JNICALL
-Java_eu_ebctech_pocsag_rtlsdr_NativeBridge_isNativeRunning(JNIEnv * /*env*/, jobject /*thiz*/)
+Java_eu_ebctech_pagerdecoder_rtlsdr_NativeBridge_isNativeRunning(JNIEnv * /*env*/, jobject /*thiz*/)
 {
-    int running = pocsag_sdr_is_running();
+    int running = pager_sdr_is_running();
     /* Re-emit the device state so a status poll re-syncs the UI even if a previous
      * announce_device_stat was dropped (for example while g_cls was null). */
-    announce_device_stat(running ? POCSAG_DEV_STARTED : POCSAG_DEV_STOPPED);
+    announce_device_stat(running ? PAGER_DEV_STARTED : PAGER_DEV_STOPPED);
     return running ? JNI_TRUE : JNI_FALSE;
 }
 
 /**
  * Start a session. BLOCKS for the whole session; the caller must be a dedicated thread.
  *
- * Returns 0 on a clean stop, or a negative POCSAG_ERR_* code.
+ * Returns 0 on a clean stop, or a negative PAGER_ERR_* code.
  *
  * Note the gain is an int in tenths of a dB, not the formatted string rtlsdr433 passes: that
  * project needed a string because rtl_433 parses one, and it then had to force Locale.ROOT on
@@ -236,7 +236,7 @@ Java_eu_ebctech_pocsag_rtlsdr_NativeBridge_isNativeRunning(JNIEnv * /*env*/, job
  * constraint here, so the locale hazard is designed out.
  */
 extern "C" JNIEXPORT jint JNICALL
-Java_eu_ebctech_pocsag_rtlsdr_NativeBridge_start(
+Java_eu_ebctech_pagerdecoder_rtlsdr_NativeBridge_start(
         JNIEnv *env, jobject /*thiz*/,
         jint fd, jint frequencyHz, jint ppm, jint gainTenthDb, jint digitalAgc, jint biasTee,
         jint errorCorrection, jstring charset, jint decodeMode, jint showPartial,
@@ -244,14 +244,14 @@ Java_eu_ebctech_pocsag_rtlsdr_NativeBridge_start(
 {
     if (fd <= 0) {
         LOGE("start: USB file descriptor missing (fd=%d)", fd);
-        return POCSAG_ERR_BAD_FD;
+        return PAGER_ERR_BAD_FD;
     }
 
     const char *cs = nullptr;
     if (charset)
         cs = env->GetStringUTFChars(charset, nullptr);
 
-    pocsag_sdr_config_t cfg;
+    pager_sdr_config_t cfg;
     memset(&cfg, 0, sizeof(cfg));
     cfg.fd = fd;
     cfg.frequency_hz = (uint32_t)frequencyHz;
@@ -265,12 +265,12 @@ Java_eu_ebctech_pocsag_rtlsdr_NativeBridge_start(
     cfg.show_partial = showPartial;
     cfg.prune_empty = pruneEmpty;
 
-    LOGI("POCSAG_CONFIG: fd=%d freq=%dHz ppm=%d gain=%.1fdB digitalAgc=%d biasT=%d "
+    LOGI("PAGER_CONFIG: fd=%d freq=%dHz ppm=%d gain=%.1fdB digitalAgc=%d biasT=%d "
          "ec=%d charset=%s mode=%d partial=%d pruneEmpty=%d",
          fd, frequencyHz, ppm, gainTenthDb / 10.0, digitalAgc, biasTee,
          errorCorrection, cfg.charset, decodeMode, showPartial, pruneEmpty);
 
-    jint result = (jint)pocsag_sdr_run(&cfg);
+    jint result = (jint)pager_sdr_run(&cfg);
 
     /* Released only after run() returns: cfg.charset aliases this buffer for the whole
      * session, and multimon's charset table is initialised from it. */
@@ -282,8 +282,8 @@ Java_eu_ebctech_pocsag_rtlsdr_NativeBridge_start(
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_eu_ebctech_pocsag_rtlsdr_NativeBridge_closeNative(JNIEnv * /*env*/, jobject /*thiz*/,
+Java_eu_ebctech_pagerdecoder_rtlsdr_NativeBridge_closeNative(JNIEnv * /*env*/, jobject /*thiz*/,
                                                        jboolean fast)
 {
-    pocsag_sdr_stop(fast == JNI_TRUE ? 1 : 0);
+    pager_sdr_stop(fast == JNI_TRUE ? 1 : 0);
 }

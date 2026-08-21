@@ -12,7 +12,7 @@
 #ifndef MULTIMON_BRIDGE_H
 #define MULTIMON_BRIDGE_H
 
-#include "pocsag_sdr.h"
+#include "pager_sdr.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -25,7 +25,7 @@ extern "C" {
  * charset the decoder does not know falls back to US with a warning, because refusing to
  * receive over a bad preference would be a worse outcome than the wrong umlauts.
  */
-void ebc_multimon_init(const pocsag_sdr_config_t *cfg);
+void ebc_multimon_init(const pager_sdr_config_t *cfg);
 
 /**
  * Tear the decoder down and log the per-bit-rate BCH statistics.
