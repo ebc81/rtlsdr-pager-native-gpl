@@ -21,6 +21,7 @@
 #include <android/log.h>
 #include <math.h>
 #include <pthread.h>
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -41,26 +42,43 @@
 
 /* ---- Session state ------------------------------------------------------------------ */
 /*
- * Single-session by design: one dongle, one decode loop. g_run_mutex guards the transition
- * in and out of "running" so a Stop arriving during startup cannot cancel a device that has
- * not been opened yet.
+ * Single-session by design: one dongle, one decode loop.
+ *
+ * TWO locks, and the split is load-bearing rather than tidy.
+ *
+ * g_dev_mutex guards g_dev, and is held across the WHOLE of rtlsdr_cancel_async_save() in
+ * pager_sdr_stop() as well as across rtlsdr_close() in pager_sdr_run(). It has to be: that
+ * cancel polls dev->async_status once a millisecond for up to a second, so snapshotting the
+ * handle and releasing the lock -- which is what this did until v1.1.0 -- let the session
+ * thread free the struct out from under the polling loop. See the comment at close_dev.
+ *
+ * g_running is an atomic instead of something g_dev_mutex protects, because
+ * pager_sdr_is_running() is reached from Kotlin on the main thread and must never wait
+ * behind a cancel. Folding it into the lock would put a one-second stall on the UI.
+ *
+ * Everything else that crosses a thread boundary is atomic rather than volatile. volatile
+ * is not a memory barrier in C: it stops the compiler caching the value in a register and
+ * says nothing about the store ever becoming visible to another core.
  */
-static pthread_mutex_t g_run_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t g_dev_mutex = PTHREAD_MUTEX_INITIALIZER;
 static rtlsdr_dev_t *g_dev = NULL;
-static volatile int g_running = 0;
-static volatile int g_stop_requested = 0;
+static _Atomic int g_running = 0;
+static _Atomic int g_stop_requested = 0;
 
 /* Written by the USB callback thread, read by the same thread. */
 static uint64_t g_total_samples = 0;
 static double g_next_stat_time = 0.0;
 static int g_peak_mag = 0;
-static int g_dev_state = PAGER_DEV_STOPPED;
 static uint64_t g_ring_drops = 0;
+
+/* Written by the session thread (STARTING/GRACE/STOPPED), by the USB callback thread
+ * (STARTED) and by isNativeRunning() on whatever thread Kotlin polls from. */
+static _Atomic int g_dev_state = PAGER_DEV_STOPPED;
 
 /* Demodulator thread: drains the ring the USB callback fills. */
 static pthread_t g_demod_thread;
-static volatile int g_demod_thread_valid = 0;
-static volatile int g_demod_exit = 0;
+static _Atomic int g_demod_thread_valid = 0;
+static _Atomic int g_demod_exit = 0;
 
 static double monotonic_seconds(void)
 {
@@ -71,9 +89,15 @@ static double monotonic_seconds(void)
 
 static void set_dev_state(int state)
 {
-    if (state == g_dev_state)
+    /*
+     * One atomic exchange, not a read followed by a write. Three different threads reach
+     * this (see g_dev_state above), and with a plain int the de-duplication below is a
+     * read-modify-write race in which the losing thread's edge simply vanishes -- which for
+     * PAGER_DEV_STARTED means a running receiver the UI never shows as started.
+     */
+    int previous = atomic_exchange_explicit(&g_dev_state, state, memory_order_relaxed);
+    if (previous == state)
         return;   /* de-duplicated: the UI only needs edges, not a 10 Hz repeat */
-    g_dev_state = state;
     static const char *names[] = { "STOPPED", "STARTING", "GRACE", "STARTED" };
     if (state >= 0 && state <= 3)
         LOGI("device state -> %s", names[state]);
@@ -103,7 +127,7 @@ static void rtlsdr_callback(unsigned char *buf, uint32_t len, void *ctx)
 {
     (void)ctx;
 
-    if (g_stop_requested || !buf || len == 0)
+    if (atomic_load_explicit(&g_stop_requested, memory_order_acquire) || !buf || len == 0)
         return;
 
     if (g_total_samples == 0) {
@@ -172,7 +196,7 @@ static void *demod_thread_fn(void *arg)
 {
     (void)arg;
     LOGI("demodulator thread started");
-    while (!g_demod_exit) {
+    while (!atomic_load_explicit(&g_demod_exit, memory_order_acquire)) {
         if (pager_dsp_pump() == 0) {
             /* usleep and not a condition variable: signalling a condvar from the USB
              * callback would put a lock in the one place that must never block. */
@@ -312,22 +336,22 @@ int pager_sdr_run(const pager_sdr_config_t *cfg)
         return PAGER_ERR_BAD_FD;
     }
 
-    pthread_mutex_lock(&g_run_mutex);
-    if (g_running) {
-        pthread_mutex_unlock(&g_run_mutex);
+    /* Claim the single session slot in one step: two concurrent starts must not both get in. */
+    int expected = 0;
+    if (!atomic_compare_exchange_strong_explicit(&g_running, &expected, 1,
+                                                 memory_order_acq_rel, memory_order_acquire)) {
         LOGE("a session is already running");
         return PAGER_ERR_ALREADY;
     }
-    g_running = 1;
-    g_stop_requested = 0;
+    atomic_store_explicit(&g_stop_requested, 0, memory_order_relaxed);
+    atomic_store_explicit(&g_dev_state, PAGER_DEV_STOPPED, memory_order_relaxed);
+    atomic_store_explicit(&g_demod_exit, 0, memory_order_relaxed);
+    atomic_store_explicit(&g_demod_thread_valid, 0, memory_order_relaxed);
+    /* Plain ints: no other thread exists yet, and all four are reset before one is created. */
     g_total_samples = 0;
     g_peak_mag = 0;
     g_next_stat_time = 0.0;
-    g_dev_state = PAGER_DEV_STOPPED;
     g_ring_drops = 0;
-    g_demod_exit = 0;
-    g_demod_thread_valid = 0;
-    pthread_mutex_unlock(&g_run_mutex);
 
     set_dev_state(PAGER_DEV_STARTING);
 
@@ -337,7 +361,13 @@ int pager_sdr_run(const pager_sdr_config_t *cfg)
     int r = rtlsdr_open2(&dev, cfg->fd);
     if (r < 0 || dev == NULL) {
         LOGE("rtlsdr_open2(fd=%d) failed: %d", cfg->fd, r);
-        result = PAGER_ERR_OPEN;
+        /*
+         * "Someone still holds the interface" deserves different advice from "this dongle is
+         * broken". rtlsdr_open2() collapses every claim failure into -102, so the underlying
+         * libusb error is read back separately. The common cause is an immediate re-plug:
+         * the kernel has not finished releasing the interface from the previous session.
+         */
+        result = rtlsdr_last_open_was_busy() ? PAGER_ERR_BUSY : PAGER_ERR_OPEN;
         goto done;
     }
 
@@ -347,13 +377,13 @@ int pager_sdr_run(const pager_sdr_config_t *cfg)
 
     /* Publish the handle only once the device is fully configured: pager_sdr_stop() uses it
      * to cancel, and cancelling a half-configured device is how you get a wedged dongle. */
-    pthread_mutex_lock(&g_run_mutex);
+    pthread_mutex_lock(&g_dev_mutex);
     g_dev = dev;
-    pthread_mutex_unlock(&g_run_mutex);
+    pthread_mutex_unlock(&g_dev_mutex);
 
     /* A Stop that arrived while we were configuring must be honoured now, before we block
      * for the whole session in read_async. */
-    if (g_stop_requested) {
+    if (atomic_load_explicit(&g_stop_requested, memory_order_acquire)) {
         LOGI("stop requested during startup, not entering the read loop");
         goto unpublish;
     }
@@ -372,7 +402,7 @@ int pager_sdr_run(const pager_sdr_config_t *cfg)
         result = PAGER_ERR_DSP_INIT;
         goto unpublish;
     }
-    g_demod_thread_valid = 1;
+    atomic_store_explicit(&g_demod_thread_valid, 1, memory_order_release);
 
     set_dev_state(PAGER_DEV_GRACE);
     LOGI("entering rtlsdr_read_async (%d buffers x %d bytes)",
@@ -391,9 +421,19 @@ int pager_sdr_run(const pager_sdr_config_t *cfg)
      * a wrong or dead dongle looks like, and it deserves its own message rather than a
      * silent return to idle.
      */
-    if (!g_stop_requested && g_total_samples == 0)
+    int stopped_by_user = atomic_load_explicit(&g_stop_requested, memory_order_acquire);
+    /*
+     * The unplug test comes first and beats a pending stop, because an unplug SETS that flag:
+     * UsbDetachReceiver calls stopFast() the moment the broadcast lands. Testing the flag
+     * first would report every unplug as a clean user stop, which is how an unplug used to
+     * reach the user as the generic PAGER_ERR_READ_ASYNC text.
+     */
+    if (rtlsdr_is_dev_lost(dev)) {
+        LOGW("the device was lost -- the dongle was unplugged");
+        result = PAGER_ERR_DETACHED;
+    } else if (!stopped_by_user && g_total_samples == 0)
         result = PAGER_ERR_NO_SAMPLES;
-    else if (!g_stop_requested && r < 0)
+    else if (!stopped_by_user && r < 0)
         result = PAGER_ERR_READ_ASYNC;
 
 unpublish:
@@ -402,52 +442,65 @@ unpublish:
      * pthread_cancel: Bionic has no pthread_cancel, so the only way to end a thread is to
      * ask it to leave. The loop polls g_demod_exit every 5 ms, so this returns promptly.
      */
-    if (g_demod_thread_valid) {
-        g_demod_exit = 1;
+    if (atomic_load_explicit(&g_demod_thread_valid, memory_order_acquire)) {
+        atomic_store_explicit(&g_demod_exit, 1, memory_order_release);
         pthread_join(g_demod_thread, NULL);
-        g_demod_thread_valid = 0;
+        atomic_store_explicit(&g_demod_thread_valid, 0, memory_order_relaxed);
     }
     /* Strictly after the join: this walks the same demodulator state the audio sink writes. */
     ebc_multimon_deinit();
     pager_dsp_deinit();
 
-    pthread_mutex_lock(&g_run_mutex);
-    g_dev = NULL;
-    pthread_mutex_unlock(&g_run_mutex);
-
 close_dev:
     /*
-     * Order matters: bias-T off before close, or the dongle keeps feeding 4.5 V into the
-     * antenna after the session ends. Ignore the result -- if the device is already gone
-     * there is nothing to turn off.
+     * Unpublishing the handle and closing it are ONE critical section, and that is the whole
+     * fix for the use-after-free this release exists for.
+     *
+     * pager_sdr_stop() holds g_dev_mutex for the whole of rtlsdr_cancel_async_save(), which
+     * dereferences dev once a millisecond for up to a second. Until v1.1.0 the stop merely
+     * snapshotted g_dev under the lock and let go, so the sequence below -- free the struct,
+     * and with it libusb_exit()'s mutexes -- could run while that loop was still reading it.
+     * It presented as "SIGABRT: pthread_mutex_lock called on a destroyed mutex", which
+     * AGENTS.md attributed only to closing the UsbDeviceConnection too early. There was a
+     * second, purely native cause, and it fired on every ordinary Stop.
+     *
+     * No deadlock: the cancel loop only needs the libusb event loop to make progress, and by
+     * the time we are here rtlsdr_read_async() has already returned, so async_status is
+     * INACTIVE and the loop breaks on its next poll -- a millisecond, not a second.
+     *
+     * A stop arriving after this point finds g_dev NULL and does nothing, which is correct.
+     *
+     * Order inside the section matters too: bias-T off before close, or the dongle keeps
+     * feeding 4.5 V into the antenna after the session ends. Ignore that result -- if the
+     * device is already gone there is nothing to turn off.
      */
+    pthread_mutex_lock(&g_dev_mutex);
+    g_dev = NULL;
     if (cfg->bias_tee)
         (void)rtlsdr_set_bias_tee(dev, 0);
     rtlsdr_close(dev);
+    pthread_mutex_unlock(&g_dev_mutex);
     LOGI("device closed");
 
 done:
     set_dev_state(PAGER_DEV_STOPPED);
-    pthread_mutex_lock(&g_run_mutex);
-    g_running = 0;
-    pthread_mutex_unlock(&g_run_mutex);
+    atomic_store_explicit(&g_running, 0, memory_order_release);
     return result;
 }
 
 void pager_sdr_stop(int fast)
 {
-    g_stop_requested = 1;
-
-    pthread_mutex_lock(&g_run_mutex);
-    rtlsdr_dev_t *dev = g_dev;
-    pthread_mutex_unlock(&g_run_mutex);
-
-    if (!dev) {
-        LOGI("stop: no device open");
-        return;
-    }
+    atomic_store_explicit(&g_stop_requested, 1, memory_order_release);
 
     /*
+     * The lock is held across the cancel, not merely around the read of g_dev.
+     *
+     * rtlsdr_cancel_async_save() polls dev->async_status every millisecond for up to a
+     * second, so a snapshot-then-unlock leaves the session thread free to run rtlsdr_close()
+     * -- freeing the struct and destroying libusb's mutexes -- while that loop is still
+     * reading it. The matching half of this contract is the close_dev block in
+     * pager_sdr_run(); read both before changing either.
+     *
      * cancel_async_save[_fast] guard against cancelling a device that is not streaming or has
      * already been lost; the plain rtlsdr_cancel_async does not, and calling it on a lost
      * device is one of the routes into the unplug use-after-free.
@@ -456,6 +509,14 @@ void pager_sdr_stop(int fast)
      * so, expect roughly 1.8 s before read_async returns: libusb must drain the bulk transfer
      * already in flight. The UI shows "Stopping..." for exactly this reason.
      */
+    pthread_mutex_lock(&g_dev_mutex);
+    rtlsdr_dev_t *dev = g_dev;
+    if (!dev) {
+        pthread_mutex_unlock(&g_dev_mutex);
+        LOGI("stop: no device open");
+        return;
+    }
+
     if (fast) {
         LOGI("stop (fast)");
         rtlsdr_cancel_async_save_fast(dev);
@@ -463,12 +524,12 @@ void pager_sdr_stop(int fast)
         LOGI("stop (waiting for transfers to drain)");
         rtlsdr_cancel_async_save(dev);
     }
+    pthread_mutex_unlock(&g_dev_mutex);
 }
 
 int pager_sdr_is_running(void)
 {
-    pthread_mutex_lock(&g_run_mutex);
-    int running = g_running;
-    pthread_mutex_unlock(&g_run_mutex);
-    return running;
+    /* Deliberately lock-free: reached from Kotlin on the main thread, and g_dev_mutex can be
+     * held for up to a second by a stop in progress. */
+    return atomic_load_explicit(&g_running, memory_order_acquire);
 }

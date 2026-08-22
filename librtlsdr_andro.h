@@ -34,6 +34,10 @@ RTLSDR_API int rtlsdr_cancel_async_save(rtlsdr_dev_t *dev);
 RTLSDR_API int rtlsdr_cancel_async_save_fast(rtlsdr_dev_t *dev);
 RTLSDR_API int rtlsdr_supporting_ppm_search();
 
+/* Added for v1.1.0; see librtlsdr_andro.c for why each one exists. */
+RTLSDR_API int rtlsdr_last_open_was_busy(void);
+RTLSDR_API int rtlsdr_is_dev_lost(rtlsdr_dev_t *dev);
+
 #ifdef __cplusplus
 }
 #endif

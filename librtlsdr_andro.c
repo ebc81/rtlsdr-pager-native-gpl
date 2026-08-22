@@ -32,6 +32,19 @@
 #define EXIT_TEST_RTLSDR_OPEN1 -101
 #define EXIT_TEST_RTLSDR_OPEN2 -102
 
+/*
+ * The libusb error behind the last rtlsdr_open2() failure.
+ *
+ * rtlsdr_open2() collapses every claim failure into EXIT_TEST_RTLSDR_OPEN2, so the caller
+ * cannot tell "another process still holds the interface" from a genuinely broken dongle.
+ * That distinction is worth a different sentence to the user -- an immediate re-plug fails
+ * with LIBUSB_ERROR_BUSY because the kernel has not finished releasing the interface from
+ * the previous session, and the honest advice is to wait a moment, not "cannot open".
+ *
+ * Single-session by design (one dongle, one decode loop), so a single value is enough.
+ */
+static int g_last_open_libusb_err = 0;
+
 int rtlsdr_open2(rtlsdr_dev_t **out_dev, int fd)
 {
     int r;
@@ -42,6 +55,8 @@ int rtlsdr_open2(rtlsdr_dev_t **out_dev, int fd)
 
     __android_log_print(ANDROID_LOG_INFO, "PAGER_USB",
             "rtlsdr_open2: opening device with fd=%d", fd);
+
+    g_last_open_libusb_err = 0;
 
     dev = malloc(sizeof(rtlsdr_dev_t));
     if (NULL == dev)
@@ -85,6 +100,7 @@ int rtlsdr_open2(rtlsdr_dev_t **out_dev, int fd)
     if (r < 0) {
         __android_log_print(ANDROID_LOG_ERROR, "PAGER_USB",
                 "rtlsdr_open2: libusb_claim_interface error %d", r);
+        g_last_open_libusb_err = r;
         libusb_close(dev->devh);
         libusb_exit(dev->ctx);
         free(dev);
@@ -215,6 +231,29 @@ int rtlsdr_cancel_async_save_fast(rtlsdr_dev_t *dev)
         return rtlsdr_cancel_async(dev);
     }
     return 0;
+}
+
+/**
+ * Non-zero if the last rtlsdr_open2() failed because the interface was already claimed.
+ *
+ * Kept as a separate query rather than widening rtlsdr_open2()'s return, so pager_sdr.c
+ * needs no libusb header of its own.
+ */
+int rtlsdr_last_open_was_busy(void)
+{
+    return g_last_open_libusb_err == LIBUSB_ERROR_BUSY;
+}
+
+/**
+ * Non-zero once libusb has reported the device gone -- i.e. the dongle was unplugged.
+ *
+ * dev_lost lives in the private struct rtlsdr_dev, which only this file can see because it
+ * #includes librtlsdr.c inline. Without this accessor an unplug is indistinguishable from a
+ * read failure, and the user is told the wrong thing.
+ */
+int rtlsdr_is_dev_lost(rtlsdr_dev_t *dev)
+{
+    return dev ? dev->dev_lost : 0;
 }
 
 int rtlsdr_cancel_async_save(rtlsdr_dev_t *dev)

@@ -132,7 +132,17 @@ static int g_pre_j = 0;
 /* Leaky DC estimate of the discriminator output. */
 static int g_dc_avg = 0;
 
-static int g_initialised = 0;
+/*
+ * Atomic, not a plain int: pager_dsp_push() tests it on the USB callback thread while
+ * pager_dsp_deinit() clears it and then frees g_ring on the session thread.
+ *
+ * That still is not a lock, and it does not need to be. libusb runs the callback on the
+ * same thread that called rtlsdr_read_async(), so by the time deinit runs the read loop
+ * has already returned and no callback can be in flight. The atomic buys the ordering
+ * guarantee that the store of 0 is visible before the frees -- and it means the day
+ * somebody moves deinit, this degrades to a dropped block rather than a torn pointer.
+ */
+static _Atomic int g_initialised = 0;
 
 /* ---- Filters (ported verbatim; see the header comment for provenance) ---------------- */
 
@@ -330,7 +340,7 @@ int pager_dsp_init(void)
     g_pre_j = 0;
     g_dc_avg = 0;
 
-    g_initialised = 1;
+    atomic_store_explicit(&g_initialised, 1, memory_order_release);
     LOGI("DSP ready: %d S/s IQ -> /%d -> %d S/s audio, %d bytes per block (%d audio samples)",
          PAGER_RTL_SAMPLE_RATE, PAGER_DECIMATION, PAGER_AUDIO_RATE,
          DSP_BLOCK_BYTES, DSP_AUDIO_PER_BLOCK);
@@ -339,7 +349,7 @@ int pager_dsp_init(void)
 
 void pager_dsp_deinit(void)
 {
-    g_initialised = 0;
+    atomic_store_explicit(&g_initialised, 0, memory_order_release);
     free(g_ring);
     g_ring = NULL;
     free(g_iq);
@@ -354,7 +364,7 @@ void pager_dsp_deinit(void)
 
 uint32_t pager_dsp_push(const unsigned char *buf, uint32_t len)
 {
-    if (!g_initialised || !buf || len == 0)
+    if (!atomic_load_explicit(&g_initialised, memory_order_acquire) || !buf || len == 0)
         return 0;
 
     uint32_t tail = atomic_load_explicit(&g_ring_tail, memory_order_acquire);
@@ -432,7 +442,7 @@ static void level_stats(const float *samples, int len)
 
 int pager_dsp_pump(void)
 {
-    if (!g_initialised)
+    if (!atomic_load_explicit(&g_initialised, memory_order_acquire))
         return 0;
 
     uint32_t head = atomic_load_explicit(&g_ring_head, memory_order_acquire);

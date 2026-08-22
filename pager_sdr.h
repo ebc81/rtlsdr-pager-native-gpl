@@ -38,6 +38,10 @@ enum pager_dev_state {
 #define PAGER_ERR_ALREADY        (-8)
 #define PAGER_ERR_NO_SAMPLES     (-9)
 #define PAGER_ERR_DSP_INIT       (-10)
+/* Added at v1.1.0. Both were previously reported as something less true: an unplug arrived
+ * as PAGER_ERR_READ_ASYNC, and a busy interface as the generic PAGER_ERR_OPEN. */
+#define PAGER_ERR_DETACHED       (-11)
+#define PAGER_ERR_BUSY           (-12)
 
 /**
  * Everything the Kotlin layer can configure about a session.

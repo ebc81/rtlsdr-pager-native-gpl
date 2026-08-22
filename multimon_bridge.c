@@ -169,9 +169,17 @@ static const int g_rate_baud[POCSAG_RATES] = { 512, 1200, 2400 };
  * does before it creates the demodulator thread, and read-only afterwards. pthread_create() is
  * the happens-before edge. Making the set changeable mid-session would need more than a type
  * change here -- see releases/v1.0.8.md for why it is a restart instead.
+ *
+ * The other half of that argument, added at v1.1.0 when the rest of the native layer moved to
+ * atomics and this deliberately did not: ebc_multimon_deinit() reads g_enabled[] again, and it
+ * is safe for the mirror-image reason -- pager_sdr_run() pthread_join()s the demodulator thread
+ * before calling it, and the join is the happens-before edge on the way out. Both edges are in
+ * pager_sdr_run(). Move either call across the thread lifetime and these must become atomic.
  */
 static int g_enabled[POCSAG_RATES];
 
+/* Same contract as g_enabled[]: set in init before the thread exists, cleared in deinit after
+ * the join, and only read by pager_audio_sink() in between. */
 static int g_active = 0;
 
 /* ---- Reception statistics ------------------------------------------------------------ */

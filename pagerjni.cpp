@@ -10,11 +10,18 @@
  * The thread-safety pattern here is not incidental. Callbacks arrive on the libusb transfer
  * thread, which Java knows nothing about, while initNative/releaseNative run on a Kotlin
  * worker thread. Every callback therefore:
- *   1. attaches the calling thread to the JVM if needed,
+ *   1. attaches the calling thread to the JVM ONCE and leaves it attached (see attachThread),
  *   2. copies the cached class global-ref under g_jni_mutex and uses the copy outside it,
  *   3. checks for a pending exception after every lookup and every call.
  * Skipping step 2 leaves a window where releaseNative() deletes the global ref between the
  * NULL check and the call.
+ *
+ * Step 1 changed at v1.1.0. It used to attach and detach around every single callback, which
+ * on a busy channel is a JVM round-trip per decoded page plus one a second for the signal
+ * stats, all on the thread that must keep the USB transfer queue fed. A thread now attaches
+ * on first use and a pthread_key destructor detaches it when it dies -- the standard JNI
+ * idiom, and the only correct one here, because a native thread that exits while attached
+ * leaks its JNIEnv and, on some Android versions, aborts the process.
  */
 
 #include <jni.h>
@@ -41,15 +48,52 @@ static jclass g_cls = nullptr;   /* global ref to NativeBridge.class */
 
 /* ---- Thread attach helper ------------------------------------------------------------ */
 
-/**
- * Get a JNIEnv for the calling thread, attaching it if it is native-only.
- *
- * Sets *needDetach when the caller must detach afterwards. Detaching a thread that was
- * already attached would tear down a JNIEnv somebody else still holds.
- */
-static bool attachThread(JNIEnv **env, bool *needDetach)
+static bool clearPendingException(JNIEnv *env, const char *what)
 {
-    *needDetach = false;
+    if (!env->ExceptionCheck())
+        return false;
+    LOGE("pending Java exception after %s", what);
+    env->ExceptionDescribe();
+    env->ExceptionClear();
+    return true;
+}
+
+/*
+ * Threads this file attaches stay attached until they die, and this key is how they get
+ * detached when they do.
+ *
+ * A native thread that exits while still attached to the JVM leaks its JNIEnv, and Android
+ * has historically aborted the process for it ("native thread exited without detaching").
+ * A pthread key destructor runs on thread exit, which is the only hook a thread created by
+ * libusb -- not by us -- gives us.
+ */
+static pthread_key_t g_detach_key;
+static pthread_once_t g_detach_key_once = PTHREAD_ONCE_INIT;
+
+static void detachOnThreadExit(void *value)
+{
+    (void)value;
+    if (g_javaVm)
+        g_javaVm->DetachCurrentThread();
+}
+
+static void makeDetachKey()
+{
+    if (pthread_key_create(&g_detach_key, detachOnThreadExit) != 0)
+        LOGE("pthread_key_create failed; attached threads will not be detached on exit");
+}
+
+/**
+ * Get a JNIEnv for the calling thread, attaching it on first use.
+ *
+ * A thread attached here is NOT detached when the call returns: it is registered with
+ * g_detach_key so it is detached when the thread itself exits. Attaching per callback was
+ * measurably wasteful on the one thread that must never stall (see the file header), and
+ * detaching a thread the JVM owns -- the Kotlin worker calling start() -- would tear down a
+ * JNIEnv somebody else still holds, which is why only the attach path registers the key.
+ */
+static bool attachThread(JNIEnv **env)
+{
     if (!g_javaVm)
         return false;
 
@@ -59,12 +103,32 @@ static bool attachThread(JNIEnv **env, bool *needDetach)
             LOGE("AttachCurrentThread failed");
             return false;
         }
-        *needDetach = true;
+        pthread_once(&g_detach_key_once, makeDetachKey);
+        /* Any non-null value will do; only the destructor matters. */
+        pthread_setspecific(g_detach_key, (void *)1);
     } else if (res != JNI_OK) {
         LOGE("GetEnv failed: %d", res);
         return false;
     }
     return *env != nullptr;
+}
+
+/**
+ * Look up one of the static callbacks, leaving no exception pending on failure.
+ *
+ * The unconditional clearPendingException() is the point. This used to read
+ * `if (mid && !clearPendingException(...))`, and && short-circuits: when GetStaticMethodID
+ * returned null the NoSuchMethodError it had thrown was never described and never cleared,
+ * and the caller went on to make further JNI calls with an exception pending.
+ */
+static jmethodID staticMethod(JNIEnv *env, jclass cls, const char *name, const char *sig)
+{
+    jmethodID mid = env->GetStaticMethodID(cls, name, sig);
+    if (clearPendingException(env, name) || !mid) {
+        LOGE("could not resolve NativeBridge.%s%s", name, sig);
+        return nullptr;
+    }
+    return mid;
 }
 
 /** Snapshot the cached class ref. Never dereference g_cls outside the lock. */
@@ -74,16 +138,6 @@ static jclass bridgeClassRef()
     jclass cls = g_cls;
     pthread_mutex_unlock(&g_jni_mutex);
     return cls;
-}
-
-static bool clearPendingException(JNIEnv *env, const char *what)
-{
-    if (!env->ExceptionCheck())
-        return false;
-    LOGE("pending Java exception after %s", what);
-    env->ExceptionDescribe();
-    env->ExceptionClear();
-    return true;
 }
 
 /* ---- Native -> Kotlin callbacks ----------------------------------------------------- */
@@ -97,27 +151,24 @@ extern "C" void announce_pocsag_message(const char *json)
         return;
 
     JNIEnv *env = nullptr;
-    bool needDetach = false;
-    if (!attachThread(&env, &needDetach))
+    if (!attachThread(&env))
         return;
 
-    jmethodID mid = env->GetStaticMethodID(cls, "nativeMessageLine", "(Ljava/lang/String;)V");
-    if (mid && !clearPendingException(env, "GetStaticMethodID(nativeMessageLine)")) {
-        jstring s = env->NewStringUTF(json);
-        if (s) {
-            env->CallStaticVoidMethod(cls, mid, s);
-            clearPendingException(env, "nativeMessageLine");
-            env->DeleteLocalRef(s);
-        } else {
-            /* NewStringUTF returns null on OOM or on invalid modified-UTF8. The decoder can
-             * emit odd bytes from a corrupted page, so this is reachable, not theoretical. */
-            clearPendingException(env, "NewStringUTF");
-            LOGW("could not create Java string for a decoded message, dropping it");
-        }
-    }
+    jmethodID mid = staticMethod(env, cls, "nativeMessageLine", "(Ljava/lang/String;)V");
+    if (!mid)
+        return;
 
-    if (needDetach)
-        g_javaVm->DetachCurrentThread();
+    jstring s = env->NewStringUTF(json);
+    if (s) {
+        env->CallStaticVoidMethod(cls, mid, s);
+        clearPendingException(env, "nativeMessageLine");
+        env->DeleteLocalRef(s);
+    } else {
+        /* NewStringUTF returns null on OOM or on invalid modified-UTF8. The decoder can
+         * emit odd bytes from a corrupted page, so this is reachable, not theoretical. */
+        clearPendingException(env, "NewStringUTF");
+        LOGW("could not create Java string for a decoded message, dropping it");
+    }
 }
 
 extern "C" void announce_device_stat(int dev_state)
@@ -127,18 +178,15 @@ extern "C" void announce_device_stat(int dev_state)
         return;
 
     JNIEnv *env = nullptr;
-    bool needDetach = false;
-    if (!attachThread(&env, &needDetach))
+    if (!attachThread(&env))
         return;
 
-    jmethodID mid = env->GetStaticMethodID(cls, "nativeDeviceStat", "(I)V");
-    if (mid && !clearPendingException(env, "GetStaticMethodID(nativeDeviceStat)")) {
-        env->CallStaticVoidMethod(cls, mid, (jint)dev_state);
-        clearPendingException(env, "nativeDeviceStat");
-    }
+    jmethodID mid = staticMethod(env, cls, "nativeDeviceStat", "(I)V");
+    if (!mid)
+        return;
 
-    if (needDetach)
-        g_javaVm->DetachCurrentThread();
+    env->CallStaticVoidMethod(cls, mid, (jint)dev_state);
+    clearPendingException(env, "nativeDeviceStat");
 }
 
 extern "C" void announce_signal_stat(int rssi_dbfs, int sync_count, int err_ppm)
@@ -148,18 +196,15 @@ extern "C" void announce_signal_stat(int rssi_dbfs, int sync_count, int err_ppm)
         return;
 
     JNIEnv *env = nullptr;
-    bool needDetach = false;
-    if (!attachThread(&env, &needDetach))
+    if (!attachThread(&env))
         return;
 
-    jmethodID mid = env->GetStaticMethodID(cls, "nativeSignalStat", "(III)V");
-    if (mid && !clearPendingException(env, "GetStaticMethodID(nativeSignalStat)")) {
-        env->CallStaticVoidMethod(cls, mid, (jint)rssi_dbfs, (jint)sync_count, (jint)err_ppm);
-        clearPendingException(env, "nativeSignalStat");
-    }
+    jmethodID mid = staticMethod(env, cls, "nativeSignalStat", "(III)V");
+    if (!mid)
+        return;
 
-    if (needDetach)
-        g_javaVm->DetachCurrentThread();
+    env->CallStaticVoidMethod(cls, mid, (jint)rssi_dbfs, (jint)sync_count, (jint)err_ppm);
+    clearPendingException(env, "nativeSignalStat");
 }
 
 /* ---- Kotlin -> native entry points -------------------------------------------------- */
@@ -187,7 +232,14 @@ Java_eu_ebctech_pagerdecoder_rtlsdr_NativeBridge_initNative(JNIEnv *env, jobject
     }
 
     /* Install the new ref before deleting the old one. Deleting first would leave a window
-     * in which a callback on the USB thread sees a NULL class and drops a message. */
+     * in which a callback on the USB thread sees a NULL class and drops a message.
+     *
+     * Concurrent initNative()/releaseNative() is safe and needs no extra locking, which is
+     * worth writing down because the Kotlin side deliberately calls initNative() off-lock
+     * (NativeBridge.closeNativeChecked). Both functions swap g_cls under g_jni_mutex and
+     * then delete only the ref they themselves removed, so no ref is ever deleted twice.
+     * The worst outcome of a bad interleaving is one leaked jclass global ref, which costs
+     * a slot and nothing else. */
     pthread_mutex_lock(&g_jni_mutex);
     jclass old = g_cls;
     g_cls = fresh;
