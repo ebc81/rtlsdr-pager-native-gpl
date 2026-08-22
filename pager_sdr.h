@@ -57,6 +57,15 @@ typedef struct {
     int decode_mode;        /* multimon pocsag_mode */
     int show_partial;
     int prune_empty;
+    /*
+     * Which POCSAG demodulators to run, as a bitmask: bit 0 = 512, bit 1 = 1200, bit 2 = 2400.
+     * The bit positions are the g_rate_baud[] / g_par[] indices in multimon_bridge.c and the
+     * POCSAG_BITRATES indices on the Kotlin side; all three orderings are one contract.
+     *
+     * Keeps the pocsag_ prefix per the AGENTS.md native naming rule -- it counts POCSAG
+     * demodulators. FLEX (stage 10) gets a flex_rate_mask beside it rather than reusing this.
+     */
+    int pocsag_rate_mask;
 } pager_sdr_config_t;
 
 /** 22050 x 64. See AGENTS.md before touching either number. */

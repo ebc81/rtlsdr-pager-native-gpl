@@ -240,7 +240,7 @@ Java_eu_ebctech_pagerdecoder_rtlsdr_NativeBridge_start(
         JNIEnv *env, jobject /*thiz*/,
         jint fd, jint frequencyHz, jint ppm, jint gainTenthDb, jint digitalAgc, jint biasTee,
         jint errorCorrection, jstring charset, jint decodeMode, jint showPartial,
-        jint pruneEmpty)
+        jint pruneEmpty, jint pocsagRateMask)
 {
     if (fd <= 0) {
         LOGE("start: USB file descriptor missing (fd=%d)", fd);
@@ -264,11 +264,12 @@ Java_eu_ebctech_pagerdecoder_rtlsdr_NativeBridge_start(
     cfg.decode_mode = decodeMode;
     cfg.show_partial = showPartial;
     cfg.prune_empty = pruneEmpty;
+    cfg.pocsag_rate_mask = pocsagRateMask;
 
     LOGI("PAGER_CONFIG: fd=%d freq=%dHz ppm=%d gain=%.1fdB digitalAgc=%d biasT=%d "
-         "ec=%d charset=%s mode=%d partial=%d pruneEmpty=%d",
+         "ec=%d charset=%s mode=%d partial=%d pruneEmpty=%d rateMask=0x%x",
          fd, frequencyHz, ppm, gainTenthDb / 10.0, digitalAgc, biasTee,
-         errorCorrection, cfg.charset, decodeMode, showPartial, pruneEmpty);
+         errorCorrection, cfg.charset, decodeMode, showPartial, pruneEmpty, pocsagRateMask);
 
     jint result = (jint)pager_sdr_run(&cfg);
 

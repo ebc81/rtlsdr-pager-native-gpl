@@ -152,9 +152,25 @@ void addJsonTimestamp(cJSON *json_output)
  */
 #define POCSAG_STATE_SYNC_BIT 64
 
+/* Every rate selected. cfg->pocsag_rate_mask is masked with this, so an unknown high bit from a
+ * corrupted preference can never enable a demodulator that does not exist. */
+#define POCSAG_RATE_MASK_ALL ((1 << POCSAG_RATES) - 1)
+
 static const struct demod_param *g_par[POCSAG_RATES];
 static struct demod_state g_state[POCSAG_RATES];
 static const int g_rate_baud[POCSAG_RATES] = { 512, 1200, 2400 };
+
+/*
+ * Which of the three the user left switched on, derived from cfg->pocsag_rate_mask once in
+ * ebc_multimon_init(). Bit i of that mask is index i here, which is also g_rate_baud[i] and
+ * g_par[i] -- and POCSAG_BITRATES[i] on the Kotlin side. One ordering, four places.
+ *
+ * Plain int rather than atomic: written by whoever calls ebc_multimon_init(), which pager_sdr.c
+ * does before it creates the demodulator thread, and read-only afterwards. pthread_create() is
+ * the happens-before edge. Making the set changeable mid-session would need more than a type
+ * change here -- see releases/v1.0.8.md for why it is a restart instead.
+ */
+static int g_enabled[POCSAG_RATES];
 
 static int g_active = 0;
 
@@ -285,12 +301,46 @@ void ebc_multimon_init(const pager_sdr_config_t *cfg)
     g_par[1] = &demod_poc12;
     g_par[2] = &demod_poc24;
 
+    /*
+     * Kotlin validates this too (SdrConfig.validateAndClamp), but repair it here as well and
+     * loudly, the way decode_mode and error_correction above are. A mask that enables nothing is
+     * the nastiest failure this config has: the USB device opens, the level meter moves, every
+     * log line looks healthy, and not one page is ever decoded.
+     */
+    int rate_mask = cfg->pocsag_rate_mask & POCSAG_RATE_MASK_ALL;
+    if (rate_mask == 0) {
+        LOGW("rate mask 0x%x enables no demodulator, running all %d rates",
+             cfg->pocsag_rate_mask, POCSAG_RATES);
+        rate_mask = POCSAG_RATE_MASK_ALL;
+    }
+
+    char rate_names[96] = "";
+    int name_len = 0;
+
     for (int i = 0; i < POCSAG_RATES; i++) {
+        /* memset and dem_par unconditionally, even for a disabled slot: nothing should be able
+         * to read a half-initialised struct demod_state, whatever a later edit starts doing in
+         * the loops below. */
         memset(&g_state[i], 0, sizeof(g_state[i]));
         g_state[i].dem_par = g_par[i];
+        g_was_synced[i] = 0;
+
+        g_enabled[i] = (rate_mask >> i) & 1;
+        if (!g_enabled[i])
+            continue;
+
         if (g_par[i]->init)
             g_par[i]->init(&g_state[i]);
-        g_was_synced[i] = 0;
+
+        if (name_len < (int)sizeof(rate_names) - 1) {
+            int n = snprintf(rate_names + name_len, sizeof(rate_names) - (size_t)name_len,
+                             "%s%s", name_len ? " + " : "", g_par[i]->name);
+            if (n > 0) {
+                name_len += n;
+                if (name_len > (int)sizeof(rate_names) - 1)
+                    name_len = (int)sizeof(rate_names) - 1;
+            }
+        }
     }
 
     atomic_store_explicit(&g_sync_count, 0, memory_order_relaxed);
@@ -302,10 +352,11 @@ void ebc_multimon_init(const pager_sdr_config_t *cfg)
     g_window_samples = 0;
 
     g_active = 1;
-    LOGI("decoder ready: %s + %s + %s, mode=%d ec=%d charset=%s partial=%d pruneEmpty=%d",
-         g_par[0]->name, g_par[1]->name, g_par[2]->name,
-         pocsag_mode, pocsag_error_correction, charset,
-         pocsag_show_partial_decodes, pocsag_prune_empty);
+    /* Names the enabled demodulators rather than all three: this line is the first thing to
+     * check when a user reports that nothing decodes. */
+    LOGI("decoder ready: %s, mode=%d ec=%d charset=%s partial=%d pruneEmpty=%d rateMask=0x%x",
+         rate_names, pocsag_mode, pocsag_error_correction, charset,
+         pocsag_show_partial_decodes, pocsag_prune_empty, rate_mask);
 }
 
 void ebc_multimon_deinit(void)
@@ -315,8 +366,16 @@ void ebc_multimon_deinit(void)
 
     g_active = 0;
     for (int i = 0; i < POCSAG_RATES; i++) {
-        /* pocsag_deinit() logs the per-rate BCH statistics through verbprintf(1). */
-        if (g_par[i] && g_par[i]->deinit)
+        /*
+         * pocsag_deinit() logs the per-rate BCH statistics through verbprintf(1).
+         *
+         * Gated on g_enabled[] so init and deinit pair exactly. Calling it on a slot whose
+         * pocsag_init() never ran happens to be harmless today -- pocsag_deinit() does nothing
+         * unless pocsag_total_error_count is non-zero, and a memset slot's is zero -- but that
+         * is a guard inside a vendored file we do not control, not an invariant we hold. Pair
+         * them properly rather than depending on it surviving the next upstream rebase.
+         */
+        if (g_enabled[i] && g_par[i] && g_par[i]->deinit)
             g_par[i]->deinit(&g_state[i]);
     }
     LOGI("decoder stopped after %d sync acquisitions",
@@ -342,6 +401,15 @@ void pager_audio_sink(const float *samples, int len)
     buffer.fbuffer = samples;
 
     for (int i = 0; i < POCSAG_RATES; i++) {
+        /*
+         * Skipping here takes out the demod call, the baud label and the sync-edge scan
+         * together, which is the point: a disabled rate must not reach g_sync_count, and the
+         * error-rate counters it would otherwise feed are shared across all three demodulators.
+         * Sharpening that readout is most of why this switch exists.
+         */
+        if (!g_enabled[i])
+            continue;
+
         /* Read by pocsag.c while this call is on the stack. */
         g_pocsag_baud = g_rate_baud[i];
         /* buffer_t is passed by value, so each demodulator advances its own copy of the
