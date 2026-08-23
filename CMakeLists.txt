@@ -99,9 +99,35 @@ add_library(pager SHARED
 
 find_library(log-lib log)
 
-# Release optimisation is deliberately held at -O1. RTL_SDR_AIS_Driver records that higher
-# levels produced random libusb crashes; the DSP is nowhere near the bottleneck at 1.4 MS/s,
-# so there is nothing to gain by raising it.
+# These two lines DO NOT AFFECT THE SHIPPED BUILD, and that is deliberate as of the v1.1.0
+# audit -- read this before "fixing" them.
+#
+# AGP configures the release variant as RelWithDebInfo, not Release, so what actually reaches
+# the compiler is CMAKE_C_FLAGS_RELWITHDEBINFO = "-O2 -g -DNDEBUG". CMAKE_C_FLAGS_RELEASE is
+# empty in the cache and these set() calls never reach that build type. Verify with:
+#   grep -E "^CMAKE_BUILD_TYPE|^CMAKE_C_FLAGS_REL" app/.cxx/RelWithDebInfo/*/*/CMakeCache.txt
+# Debug carries no -O flag at all, i.e. -O0.
+#
+# The -O1 was inherited from RTL_SDR_AIS_Driver ("Keep optimization low to reduce random libusb
+# crashes"). Checked at v1.1.1, and the result is the reason -O1 is not being forced here:
+#
+#   RTL_SDR_AIS_Driver  app/CMakeLists.txt:9   SET(CMAKE_C_FLAGS_RELEASE "-O1 -DNDEBUG")
+#                       -> dead for the same reason, same empty _RELEASE cache entry
+#   rtlsdr433           rtl433/CMakeLists.txt:92  the equivalent line is COMMENTED OUT
+#
+# So the project that recorded the crash history has itself been shipping -O2 the whole time,
+# and the sibling that looked at the question decided not to lower it at all. Nothing anywhere
+# demonstrates that -O1 ever prevented a crash; there is no measurement behind the rule, only a
+# line that never ran. Forcing -O1 here now would change what has been in the field for ten
+# versions on the strength of that.
+#
+# If a libusb crash ever does look optimisation-dependent, the knob is
+# CMAKE_C_FLAGS_RELWITHDEBINFO -- setting CMAKE_C_FLAGS_RELEASE silently does nothing, which is
+# exactly how this went unnoticed in two projects at once.
+#
+# The real gap is elsewhere and is worth more than the flag: this app is tested in DEBUG only,
+# so the -O2 configuration that ships has never been run on hardware. Debug is -O0. See the
+# release-build item in releases/v1.1.1.md.
 set(CMAKE_C_FLAGS_RELEASE "-O1 -DNDEBUG")
 set(CMAKE_CXX_FLAGS_RELEASE "-O1 -DNDEBUG")
 

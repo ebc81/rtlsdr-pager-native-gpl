@@ -218,6 +218,30 @@ Java_eu_ebctech_pagerdecoder_rtlsdr_NativeBridge_initNative(JNIEnv *env, jobject
     }
     g_javaVersion = env->GetVersion();
 
+    /*
+     * Already initialised? Then do nothing at all -- and that early return is a fix, not an
+     * optimisation.
+     *
+     * kBridgeClass never changes, so a second global ref to the same class buys nothing. What
+     * the old code did buy was a use-after-delete: NativeBridge.closeNativeChecked() calls
+     * initNative() on EVERY stop, off `lock`, from the service handler thread and from the
+     * PagerDetachStop thread. It then deleted the previous ref below -- while a demodulator
+     * thread could be sitting between its bridgeClassRef() snapshot and its
+     * CallStaticVoidMethod, holding a jclass that had just been freed. CheckJNI aborts the
+     * process on that; without CheckJNI the table slot may already have been reused.
+     *
+     * Returning early leaves releaseNative() as the only deleter, and that runs from
+     * SdrWorkerThread's finally -- after pager_sdr_run() has joined the demodulator thread, so
+     * no callback can be in flight. Note that snapshotting under g_jni_mutex, which is what
+     * bridgeClassRef() does, never closed this: it copies the pointer, it does not keep the
+     * referent alive.
+     */
+    pthread_mutex_lock(&g_jni_mutex);
+    bool already = (g_cls != nullptr);
+    pthread_mutex_unlock(&g_jni_mutex);
+    if (already)
+        return JNI_TRUE;
+
     jclass local = env->FindClass(kBridgeClass);
     if (!local || clearPendingException(env, "FindClass(NativeBridge)")) {
         LOGE("could not find %s", kBridgeClass);
@@ -231,15 +255,17 @@ Java_eu_ebctech_pagerdecoder_rtlsdr_NativeBridge_initNative(JNIEnv *env, jobject
         return JNI_FALSE;
     }
 
-    /* Install the new ref before deleting the old one. Deleting first would leave a window
-     * in which a callback on the USB thread sees a NULL class and drops a message.
+    /*
+     * Only reached when g_cls was NULL, so `old` is almost always NULL too -- the swap and the
+     * delete stay only to cover two initNative() calls racing each other past the early return
+     * above, where the loser's ref would otherwise leak.
      *
-     * Concurrent initNative()/releaseNative() is safe and needs no extra locking, which is
-     * worth writing down because the Kotlin side deliberately calls initNative() off-lock
-     * (NativeBridge.closeNativeChecked). Both functions swap g_cls under g_jni_mutex and
-     * then delete only the ref they themselves removed, so no ref is ever deleted twice.
-     * The worst outcome of a bad interleaving is one leaked jclass global ref, which costs
-     * a slot and nothing else. */
+     * This comment used to claim that a bad interleaving costs "one leaked jclass global ref,
+     * which costs a slot and nothing else". That was wrong, and the reasoning is worth keeping
+     * so it is not reintroduced: it accounted only for double deletion. The real hazard was a
+     * concurrent DELETE of a ref another thread was still using -- see the early return above.
+     * Do not "restore symmetry" by dropping that return and unconditionally re-creating the
+     * ref here. */
     pthread_mutex_lock(&g_jni_mutex);
     jclass old = g_cls;
     g_cls = fresh;
