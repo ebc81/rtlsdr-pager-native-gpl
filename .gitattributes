@@ -7,5 +7,7 @@
 # diff into thousands of whitespace hits and hide the real ones.
 #
 # `-text` means: store the bytes as they are, hand them back as they are. multimon/ keeps the
-# LF endings upstream ships; rtl-sdr/ and libusb-andro/ keep the CRLF they were vendored with.
+# LF endings upstream ships, and every other file here keeps the bytes it was committed with.
+# (Until v1.1.2 this line also named rtl-sdr/ and libusb-andro/, which kept the CRLF they were
+# vendored with. Both moved to the ebc-sdr-native repository; the rule itself is unchanged.)
 * -text

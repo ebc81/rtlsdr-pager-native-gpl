@@ -1,9 +1,21 @@
 # RTL-SDR Pager — native (GPL) components
 
-This repository is the **complete corresponding source code** for the GPL-licensed native
-components of the Android application **RTL-SDR Pager** by ebcTech (Christian Ebner). It exists
-to satisfy the written offer under the GNU General Public License, version 2: anyone who
-receives the app binary is entitled to the source of these components.
+This repository carries the pager-specific half of the **complete corresponding source code**
+for the GPL-licensed native components of the Android application **RTL-SDR Pager** by ebcTech
+(Christian Ebner). It exists to satisfy the written offer under the GNU General Public License,
+version 2: anyone who receives the app binary is entitled to the source of these components.
+
+> **Since v1.1.2 the source lives in two repositories, and this one is not complete on its own.**
+> The shared SDR base — librtlsdr, the libusb Android port and the file-descriptor bridge — moved
+> to its own project, shared with the other EBC radio apps:
+>
+> **<https://github.com/ebc81/ebc-sdr-native>**, pinned by the app at tag **`v0.3.0`**.
+>
+> In the app's tree that project sits at `app/src/main/cpp/ebc-sdr-native` as a git submodule. It
+> is deliberately **not** copied in here: mirroring it would republish the same GPL code at a
+> second place and a second version, which is the drift the shared base exists to end. Together,
+> the two repositories are the complete corresponding source; `CMakeLists.txt` here expects the
+> other one beside it (see **Building** below).
 
 The app itself decodes POCSAG pager messages at 512, 1200 and 2400 bit/s from an RTL-SDR USB
 dongle connected to an Android device over USB-OTG. It is receive-only, and all decoding happens
@@ -21,10 +33,8 @@ build system are not GPL-obligated and are not published here.
 | `pager_sdr.c/.h` | device lifecycle — open from a USB file descriptor, configure, stream, tear down |
 | `pager_dsp.c/.h` | IQ → audio: lock-free ring buffer, /64 CIC decimation with droop compensation, FM discriminator, DC blocker |
 | `multimon_bridge.c/.h` | the host glue multimon-ng expects from its main program (upstream's `unixinput.c`), plus the three demodulator states and the audio sink |
-| `librtlsdr_andro.c/.h` | `rtlsdr_open2(dev, fd)`: the Android file-descriptor bridge into librtlsdr |
 | `multimon/` | multimon-ng's POCSAG decoder — see `multimon/PROVENANCE.md` |
-| `rtl-sdr/` | librtlsdr, RTL-SDR Blog fork, with Android USB and unplug fixes |
-| `libusb-andro/` | libusb 1.0.23, Android port: no enumeration, `libusb_wrap_sys_device()` only |
+| *(not here)* | librtlsdr, the libusb Android port and `rtlsdr_open2(dev, fd)` live in [`ebc-sdr-native`](https://github.com/ebc81/ebc-sdr-native) @ `v0.3.0`, which `CMakeLists.txt` pulls in with `add_subdirectory(ebc-sdr-native)` |
 
 ## Signal path
 
@@ -51,9 +61,8 @@ channels and nothing in the signal says which is in use until it decodes.
 | multimon-ng (`multimon/`, except as noted) | GPL-2.0-or-later — © 1996 Thomas Sailer, © 2012-2014 Elias Oenal, and contributors |
 | `multimon/bch.c`, `multimon/bch.h` | public domain (Unlicense), as released by their author |
 | `multimon/cJSON.c`, `multimon/cJSON.h` | MIT — © 2009-2017 Dave Gamble and cJSON contributors |
-| librtlsdr (`rtl-sdr/`) | GPL-2.0-only — © 2012-2024 Steve Markgraf, Osmocom, RTL-SDR Blog contributors |
-| libusb (`libusb-andro/`) | LGPL-2.1-only — © libusb contributors |
-| EBC integration layer (`pagerjni.cpp`, `pager_sdr.c`, `pager_dsp.c`, `multimon_bridge.c`, `librtlsdr_andro.c`, `CMakeLists.txt`, and the Android patches to the above) | GPL-2.0-only — © 2026 Christian Ebner |
+| librtlsdr and libusb | not in this repository since v1.1.2 — see [`ebc-sdr-native`](https://github.com/ebc81/ebc-sdr-native), which carries their licences and its own provenance notes |
+| EBC integration layer (`pagerjni.cpp`, `pager_sdr.c`, `pager_dsp.c`, `multimon_bridge.c`, `CMakeLists.txt`, and the Android patches to the above) | GPL-2.0-only — © 2026 Christian Ebner |
 
 `LICENSE` is the GPL-2 text. Each vendored tree keeps its own `COPYING` where upstream shipped
 one. The IQ-to-audio DSP in `pager_dsp.c` derives from `rtl_fm` (Kyle Keen, GPL-2.0) by way of
@@ -78,25 +87,31 @@ This tree is not standalone — it is compiled as part of the app's Gradle proje
 Gradle Plugin's CMake integration, for `arm64-v8a`, `armeabi-v7a`, `x86` and `x86_64`:
 
 - NDK 29.0.14206865, CMake 4.1.2, `minSdk 29`
-- `-D__EBCANDROID__=1 -DRTLSDR=1 -DLIBUSB1=1 -DTHREADS=1`
+- `-D__EBCANDROID__=1`, plus the definitions `ebc-sdr-native` sets for itself
 - multimon-ng switches: `-DCHARSET_UTF8 -DNO_X11 -DNO_SDL3 -DMAX_VERBOSE_LEVEL=3`
-- Release optimisation is held at `-O1` deliberately; higher levels have produced random libusb
-  crashes in sibling projects, and the DSP is nowhere near the bottleneck at 1.4 MS/s.
+- Release optimisation is whatever AGP configures. It builds the release variant as
+  `RelWithDebInfo`, so the compiler gets `-O2 -g -DNDEBUG`; `CMAKE_C_FLAGS_RELEASE` is never
+  consulted. An earlier version of this file claimed `-O1` was held deliberately against "random
+  libusb crashes in sibling projects" — that line never took effect in any project that carried
+  it, and no measurement was ever made behind the claim. `CMAKE_C_FLAGS_RELWITHDEBINFO` is the
+  knob that would actually work, if anyone ever has a reason to turn it.
 
-To build it on its own, point a CMake toolchain file at the NDK and pass those definitions;
+**To build this tree you need `ebc-sdr-native` beside it.** `CMakeLists.txt` calls
+`add_subdirectory(ebc-sdr-native)` and links the static library `ebc_sdr`, so clone
+<https://github.com/ebc81/ebc-sdr-native> at tag `v0.3.0` into a directory of that name here
+first. Then point a CMake toolchain file at the NDK and pass the definitions above;
 `CMakeLists.txt` needs no Gradle-provided variables beyond the standard Android toolchain ones.
-Note that `rtl-sdr/src/librtlsdr.c` is intentionally **not** listed as a source:
-`librtlsdr_andro.c` `#include`s it inline so the wrapper can reach the private
-`struct rtlsdr_dev`.
+Include paths, compile options and linker flags for the SDR base come from that subproject.
 
 ## About this mirror
 
-This is a one-way export of `app/src/main/cpp/` from the application's own repository, published
-on every change to that directory. Pull requests here cannot be merged into the app; if you have
-a fix for one of the vendored projects, it belongs upstream:
+This is a one-way export of `app/src/main/cpp/` from the application's own repository — minus the
+`ebc-sdr-native` submodule, which has its own repository — published on every change to that
+directory. Pull requests here cannot be merged into the app; if you have a fix for one of the
+vendored projects, it belongs upstream:
 
 - multimon-ng — <https://github.com/EliasOenal/multimon-ng>
-- rtl-sdr (RTL-SDR Blog fork) — <https://github.com/rtlsdrblog/rtl-sdr-blog>
-- libusb — <https://libusb.info>
+- rtl-sdr — <https://github.com/osmocom/rtl-sdr> (via [`ebc-sdr-native`](https://github.com/ebc81/ebc-sdr-native))
+- libusb — <https://libusb.info> (via [`ebc-sdr-native`](https://github.com/ebc81/ebc-sdr-native))
 
 Issues about the app itself, or about the integration layer in this repository, are welcome here.
