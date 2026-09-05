@@ -71,17 +71,20 @@ add_library(pager SHARED
     pager_dsp.c
     multimon_bridge.c
 
-    # multimon-ng, POCSAG path only so far. bch.c and not bch_stub.c/BCHCode.c: the stub does
-    # no error correction at all. demod_flex_next.c is absent because it is not vendored YET,
-    # not because FLEX is forbidden -- FLEX is in scope as stage 10 (AGENTS.md guardrail 5).
-    # bch.c already carries bch_flex_next_correct() and multimon.h already declares
-    # demod_flex_next, so adding it is one line here plus an output patch. There is no
-    # unixinput.c, whose host-program duties multimon_bridge.c takes over.
+    # multimon-ng, the two paging paths. bch.c and not bch_stub.c/BCHCode.c: the stub does no
+    # error correction at all, and bch.c is also where bch_flex_next_correct() lives. There is
+    # no unixinput.c, whose host-program duties multimon_bridge.c takes over.
+    #
+    # demod_flex_next.c is the ONLY file here under GPL-3.0-or-later (it descends from GNU
+    # Radio); everything else is GPL-2.0-or-later or looser. That is what makes the whole
+    # application GPL-3.0-or-later -- see NOTICE and multimon/PROVENANCE.md before removing or
+    # replacing it.
     ${MULTIMON_DIR}/pocsag.c
     ${MULTIMON_DIR}/bch.c
     ${MULTIMON_DIR}/demod_poc5.c
     ${MULTIMON_DIR}/demod_poc12.c
     ${MULTIMON_DIR}/demod_poc24.c
+    ${MULTIMON_DIR}/demod_flex_next.c
     ${MULTIMON_DIR}/cJSON.c
 )
 

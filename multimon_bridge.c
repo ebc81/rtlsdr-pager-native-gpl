@@ -178,6 +178,25 @@ static const int g_rate_baud[POCSAG_RATES] = { 512, 1200, 2400 };
  */
 static int g_enabled[POCSAG_RATES];
 
+/*
+ * FLEX, beside the POCSAG array rather than inside it.
+ *
+ * One demodulator, not three: demod_flex_next detects 1600/3200/6400 and 2- or 4-level FSK
+ * from the sync word itself, so there is no index set for a rate mask to select over. That is
+ * why cfg->flex_enabled is a flag, and why none of the POCSAG constants above grew by one --
+ * POCSAG_RATES counts POCSAG demodulators and must keep counting only those.
+ *
+ * g_flex_enabled follows exactly the g_enabled[] contract: written in ebc_multimon_init()
+ * before pager_sdr.c creates the demodulator thread, read again in ebc_multimon_deinit() after
+ * it joins, and only read by pager_audio_sink() in between. Both happens-before edges are in
+ * pager_sdr_run(). Move either call across the thread's lifetime and this must become atomic.
+ *
+ * Zero is a legitimate value here, unlike an all-off POCSAG mask: FLEX is the paid feature, so
+ * a free session arrives with it off on purpose. Nothing below may "repair" that.
+ */
+static struct demod_state g_flex_state;
+static int g_flex_enabled = 0;
+
 /* Same contract as g_enabled[]: set in init before the thread exists, cleared in deinit after
  * the join, and only read by pager_audio_sink() in between. */
 static int g_active = 0;
@@ -351,6 +370,17 @@ void ebc_multimon_init(const pager_sdr_config_t *cfg)
         }
     }
 
+    /*
+     * FLEX after the POCSAG loop, and outside it: it has no slot in g_par[]/g_state[], and it
+     * carries its own heap state -- flex_next_init() calls Flex_New(), so this init and the
+     * deinit below are a malloc/free pair rather than a memset.
+     */
+    g_flex_enabled = cfg->flex_enabled ? 1 : 0;
+    memset(&g_flex_state, 0, sizeof(g_flex_state));
+    g_flex_state.dem_par = &demod_flex_next;
+    if (g_flex_enabled && demod_flex_next.init)
+        demod_flex_next.init(&g_flex_state);
+
     atomic_store_explicit(&g_sync_count, 0, memory_order_relaxed);
     atomic_store_explicit(&g_err_ppm, 0, memory_order_relaxed);
     g_pocsag_sync_words = 0;
@@ -362,9 +392,9 @@ void ebc_multimon_init(const pager_sdr_config_t *cfg)
     g_active = 1;
     /* Names the enabled demodulators rather than all three: this line is the first thing to
      * check when a user reports that nothing decodes. */
-    LOGI("decoder ready: %s, mode=%d ec=%d charset=%s partial=%d pruneEmpty=%d rateMask=0x%x",
-         rate_names, pocsag_mode, pocsag_error_correction, charset,
-         pocsag_show_partial_decodes, pocsag_prune_empty, rate_mask);
+    LOGI("decoder ready: %s%s, mode=%d ec=%d charset=%s partial=%d pruneEmpty=%d rateMask=0x%x",
+         rate_names, g_flex_enabled ? " + FLEX_NEXT" : "", pocsag_mode, pocsag_error_correction,
+         charset, pocsag_show_partial_decodes, pocsag_prune_empty, rate_mask);
 }
 
 void ebc_multimon_deinit(void)
@@ -386,6 +416,13 @@ void ebc_multimon_deinit(void)
         if (g_enabled[i] && g_par[i] && g_par[i]->deinit)
             g_par[i]->deinit(&g_state[i]);
     }
+
+    /* Paired with the init above for a stronger reason than the POCSAG slots: flex_next_deinit()
+     * frees what Flex_New() allocated, so skipping it leaks ~100 kB per session. It is null-safe
+     * either way, but the pairing is what makes that a belt rather than the only strap. */
+    if (g_flex_enabled && demod_flex_next.deinit)
+        demod_flex_next.deinit(&g_flex_state);
+    g_flex_enabled = 0;
     LOGI("decoder stopped after %d sync acquisitions",
          atomic_load_explicit(&g_sync_count, memory_order_relaxed));
 }
@@ -431,6 +468,21 @@ void pager_audio_sink(const float *samples, int len)
             atomic_fetch_add_explicit(&g_sync_count, 1, memory_order_relaxed);
         g_was_synced[i] = synced;
     }
+
+    /*
+     * FLEX last, on the same block. buffer_t is passed by value, so this sees the block from
+     * the start exactly as each POCSAG demodulator did.
+     *
+     * It contributes nothing to g_sync_count or to the error rate, and that is a decision
+     * rather than an omission: FLEX keeps all of its state behind the opaque l1.flex_next
+     * pointer -- there is no l2 slot and no equivalent of POCSAG_STATE_SYNC_BIT to probe --
+     * so counting its sync acquisitions would mean a ninth patch to a vendored file, and
+     * PROVENANCE.md promises everything but pocsag.c is byte-identical to upstream. The
+     * readout stays fed either way: the POCSAG mask can never be empty, so at least one
+     * demodulator is always contributing to it.
+     */
+    if (g_flex_enabled)
+        demod_flex_next.demod(&g_flex_state, buffer, len);
 
     g_window_samples += len;
     if (g_window_samples >= PAGER_AUDIO_RATE) {

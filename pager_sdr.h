@@ -67,9 +67,22 @@ typedef struct {
      * POCSAG_BITRATES indices on the Kotlin side; all three orderings are one contract.
      *
      * Keeps the pocsag_ prefix per the AGENTS.md native naming rule -- it counts POCSAG
-     * demodulators. FLEX (stage 10) gets a flex_rate_mask beside it rather than reusing this.
+     * demodulators. FLEX has its own field below rather than reusing any of these bits.
      */
     int pocsag_rate_mask;
+    /*
+     * Run the FLEX demodulator as well: 0 off, 1 on.
+     *
+     * A flag and not a rate mask, which is what pager_sdr.h and AGENTS.md promised until this
+     * field was written. demod_flex_next is a SINGLE demodulator that detects 1600/3200/6400
+     * and 2- or 4-level FSK from the sync word itself -- there is no g_par[] index set for a
+     * mask to select over, so a mask would have had exactly one meaningful bit and three
+     * ways to be wrong.
+     *
+     * Zero is a legitimate value, unlike an all-off pocsag_rate_mask: FLEX is the paid
+     * feature, so a free session sets this to 0 deliberately. Nothing may "repair" it.
+     */
+    int flex_enabled;
 } pager_sdr_config_t;
 
 /** 22050 x 64. See AGENTS.md before touching either number. */
@@ -93,7 +106,15 @@ int pager_sdr_is_running(void);
 /* ---- Implemented in pagerjni.cpp -------------------------------------------------- */
 /* Declared here rather than in a JNI header so the C sources need no JNI types. */
 
-/** One decoded page, already serialised to JSON. */
+/** One decoded page, already serialised to JSON. Called by the FLEX output patch. */
+void announce_pager_message(const char *json);
+
+/**
+ * The same sink under the name patched multimon/pocsag.c calls.
+ *
+ * Kept because the AGENTS.md naming rule freezes anything vendored pocsag.c refers to; it
+ * forwards to announce_pager_message() rather than duplicating it.
+ */
 void announce_pocsag_message(const char *json);
 
 /** Device state changed; argument is an enum pager_dev_state. */

@@ -142,7 +142,7 @@ static jclass bridgeClassRef()
 
 /* ---- Native -> Kotlin callbacks ----------------------------------------------------- */
 
-extern "C" void announce_pocsag_message(const char *json)
+extern "C" void announce_pager_message(const char *json)
 {
     if (!json)
         return;
@@ -169,6 +169,17 @@ extern "C" void announce_pocsag_message(const char *json)
         clearPendingException(env, "NewStringUTF");
         LOGW("could not create Java string for a decoded message, dropping it");
     }
+}
+
+/*
+ * The POCSAG name is the one patched multimon/pocsag.c calls, and AGENTS.md's native naming
+ * rule freezes it: renaming it would force a ninth patch to a file PROVENANCE.md promises is
+ * byte-identical to upstream apart from the eight recorded ones. So it stays, as a forwarder
+ * to the protocol-neutral name the FLEX patch uses. One implementation, two callers.
+ */
+extern "C" void announce_pocsag_message(const char *json)
+{
+    announce_pager_message(json);
 }
 
 extern "C" void announce_device_stat(int dev_state)
@@ -318,7 +329,7 @@ Java_eu_ebctech_pagerdecoder_rtlsdr_NativeBridge_start(
         JNIEnv *env, jobject /*thiz*/,
         jint fd, jint frequencyHz, jint ppm, jint gainTenthDb, jint digitalAgc, jint biasTee,
         jint errorCorrection, jstring charset, jint decodeMode, jint showPartial,
-        jint pruneEmpty, jint pocsagRateMask)
+        jint pruneEmpty, jint pocsagRateMask, jint flexEnabled)
 {
     if (fd <= 0) {
         LOGE("start: USB file descriptor missing (fd=%d)", fd);
@@ -343,11 +354,15 @@ Java_eu_ebctech_pagerdecoder_rtlsdr_NativeBridge_start(
     cfg.show_partial = showPartial;
     cfg.prune_empty = pruneEmpty;
     cfg.pocsag_rate_mask = pocsagRateMask;
+    /* memset above already made this 0; assigning it anyway so a reader of the fill block
+     * sees every field the Kotlin side sends, in the order start() takes them. */
+    cfg.flex_enabled = flexEnabled ? 1 : 0;
 
     LOGI("PAGER_CONFIG: fd=%d freq=%dHz ppm=%d gain=%.1fdB digitalAgc=%d biasT=%d "
-         "ec=%d charset=%s mode=%d partial=%d pruneEmpty=%d rateMask=0x%x",
+         "ec=%d charset=%s mode=%d partial=%d pruneEmpty=%d rateMask=0x%x flex=%s",
          fd, frequencyHz, ppm, gainTenthDb / 10.0, digitalAgc, biasTee,
-         errorCorrection, cfg.charset, decodeMode, showPartial, pruneEmpty, pocsagRateMask);
+         errorCorrection, cfg.charset, decodeMode, showPartial, pruneEmpty, pocsagRateMask,
+         cfg.flex_enabled ? "on" : "off");
 
     jint result = (jint)pager_sdr_run(&cfg);
 
