@@ -363,9 +363,10 @@ int pager_sdr_run(const pager_sdr_config_t *cfg)
         LOGE("rtlsdr_open2(fd=%d) failed: %d", cfg->fd, r);
         /*
          * "Someone still holds the interface" deserves different advice from "this dongle is
-         * broken". rtlsdr_open2() collapses every claim failure into -102, so the underlying
-         * libusb error is read back separately. The common cause is an immediate re-plug:
-         * the kernel has not finished releasing the interface from the previous session.
+         * broken". rtlsdr_open2() collapses every claim failure into EBC_SDR_ERR_CLAIM, so the
+         * underlying libusb error is read back separately. The common cause is an immediate
+         * re-plug: the kernel has not finished releasing the interface from the previous
+         * session.
          */
         result = rtlsdr_last_open_was_busy() ? PAGER_ERR_BUSY : PAGER_ERR_OPEN;
         goto done;
