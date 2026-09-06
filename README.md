@@ -9,9 +9,14 @@ anyone who receives the app binary is entitled to the source of these components
 > `multimon/demod_flex_next.c`, descends from GNU Radio and is licensed GPL-3.0-**or-later**;
 > so is the older `demod_flex.c`, so there is no GPL-2 route to FLEX at all. Every other
 > component here is GPL-2.0-or-later or looser, so combining them is lawful and the combined
-> work is GPL-3.0-or-later. Nothing was relicensed and no component's own terms changed — only
-> the terms of the combination. `LICENSE` is the GPL-3 text; releases up to and including
-> v1.2.0 were GPL-2.0.
+> **native layer** is GPL-3.0-or-later. Nothing was relicensed and no component's own terms
+> changed — only the terms of that combination. `LICENSE` is the GPL-3 text; releases up to and
+> including v1.2.0 were GPL-2.0.
+>
+> That v3 header is settled, not a copy-paste slip against multimon-ng's GPLv2 `COPYING`: the v2
+> header was the 2015 error, and upstream corrected it in PR #110 / `dc3fc918` (2018-07-27) after
+> a Debian packager traced the file to GNU Radio, which relicensed to v3 in 2007. The full
+> evidence chain is in `multimon/PROVENANCE.md`.
 
 > **Since v1.1.2 the source lives in two repositories, and this one is not complete on its own.**
 > The shared SDR base — librtlsdr, the libusb Android port and the file-descriptor bridge — moved
@@ -29,8 +34,10 @@ The app itself decodes POCSAG pager messages at 512, 1200 and 2400 bit/s, and FL
 3200 and 6400 bit/s, from an RTL-SDR USB dongle connected to an Android device over USB-OTG. It
 is receive-only, and all decoding happens on the device — there is no server component.
 
-This tree contains **only** the C/C++ layer. The application's Kotlin sources, resources and
-build system are not GPL-obligated and are not published here.
+This tree contains **only** the C/C++ layer. **The proprietary Kotlin application layer (UI,
+billing, service logic), along with the app's resources and build system, is NOT included here
+and is not covered by GPL-3.0.** The GPL applies to the files in this repository and to the other
+native components named under **Licensing** below.
 
 ## Layout
 
