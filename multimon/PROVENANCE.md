@@ -4,13 +4,14 @@ Upstream: <https://github.com/EliasOenal/multimon-ng>
 Commit: `de0585926542687155852db502a9d2861e9acf95` ("Bump version to 1.6.0", 2026-07-26)
 License: GPL-2.0-or-later (`COPYING`), except `bch.c` / `bch.h`, which upstream released into
 the public domain (Unlicense), `cJSON.c` / `cJSON.h` (MIT), and **`demod_flex_next.c`, which is
-GPL-3.0-or-later** — see the section below. It is the reason the whole application is
-GPL-3.0-or-later.
+GPL-3.0-or-later** — see the section below. It is the reason the **native layer** is
+GPL-3.0-or-later. It is *not* a reason the application as a whole is: the Kotlin layer is
+proprietary and is not GPL covered. See AGENTS.md, "Legal posture".
 
 The POCSAG and FLEX paths are vendored. AIS, ADS-B, ACARS and the other demodulators in the
 upstream tree are deliberately absent — see AGENTS.md guardrail 5.
 
-## `demod_flex_next.c` and the licence of the whole app
+## `demod_flex_next.c` and the licence of the native layer
 
 This one file descends from GNU Radio and carries a different header from everything else here:
 
@@ -21,12 +22,47 @@ This one file descends from GNU Radio and carries a different header from everyt
 
 `demod_flex.c`, the older FLEX decoder that is not vendored, carries the same header, so there
 is no GPL-2 route to FLEX in this tree. Combining it is lawful — every other component here is
-"or later" and so upgrades to v3 — but the combined work is then **GPL-3.0-or-later**, and that
-is what `NOTICE`, `app/config/libraries/*.json` and the public mirror's `LICENSE` now say.
-Removing this file is the only thing that would put the application back on GPL-2.
+"or later" and so upgrades to v3 — but the combined **native layer** is then
+**GPL-3.0-or-later**, and that is what `NOTICE`, `app/config/libraries/*.json` and the public
+mirror's `LICENSE` now say. Removing this file is the only thing that would put the native layer
+back on GPL-2.
 
 Nothing in the plan for stage 10 predicted this; it was found by reading the file's header
 before vendoring it. Read a licence header before a rebase, not a project's own summary of one.
+
+### The v3 header is the correction, not a copy-paste error — do not "fix" it
+
+The obvious suspicion is that this header is a mistake: multimon-ng's `COPYING` says GPLv2, so
+why does one file say v3? It was investigated in full (2026-09-06) against upstream git history.
+**The GPLv2 header was the error, and upstream already fixed it.** The chain, all primary:
+
+1. **2015-05-25** (`81e6429e`) Craig Shelley adds FLEX to multimon-ng, stamps it with
+   multimon-ng's own boilerplate — "either version **2** of the License, or (at your option) any
+   later version" — and omits the FSF copyright entirely. That is the actual copy-paste error.
+2. **2018** Göran Weinholt, preparing multimon-ng **for Debian**, files upstream issue **#108**,
+   "License issues with FLEX decoder": the FSF notice is missing, the original is GNU Radio's
+   `gr-pager/lib/flex_sync_impl.cc`, and "if the FSF copyright is restored it should say GPL
+   version 3 … there are still large identical comments".
+3. **2018-07-27** upstream **PR #110** lands as `dc3fc918`, "Restore FSF notice on the FLEX
+   decoder derived from GNU Radio". The diff removes the v2 paragraph, adds "Copyright
+   2004,2006,2010 Free Software Foundation, Inc." and adds "either version **3**". Maintainer
+   review: "Looks good to me."
+4. **GNU Radio relicensed GPL-2.0-or-later → GPL-3.0-or-later in July 2007.** The FSF copyright
+   line runs to **2010**, after that switch.
+5. **`demod_flex_next.c` did not exist until 2022-06-06** (`Rename FLEX to FLEX_NEXT` /
+   `Brought back FLEX from 1.1.9`) — four years after the correction. It has therefore never
+   carried anything but the v3 header, and every contribution to it since (2022, 2024, and the
+   2026 ARIB STD-43A overhaul) was made under it.
+
+A GPLv2 route is therefore theoretical only: the 2004/2006 GNU Radio flex code predates the
+relicense, but building on it means discarding Craig Shelley's C port and every improvement from
+2015 to 2026 and rewriting from a module GNU Radio deprecated in 3.7 and deleted in 3.8. Do not
+reopen this. Reverting the header would mean distributing GPLv3 code under GPLv2 terms.
+
+It also buys nothing. Once the scope is stated correctly — native layer GPL, Kotlin layer
+proprietary — v2 versus v3 changes nothing operationally here: the native source is published
+either way, there is no GPL-2.0-**only** code anywhere in the tree to conflict with, and Play
+distributes GPLv3 without issue.
 
 ## What the FLEX path needed, and what it did not
 
@@ -103,5 +139,6 @@ received content out of the log. **Check it again after a rebase**: a new unguar
    re-check that every `verbprintf(0, …)` carrying message text is still behind
    `if (!json_mode)`.
 7. Re-read `demod_flex_next.c`'s licence header. It is the only GPL-3.0-or-later file here and
-   the reason the application is GPL-3.0-or-later; if upstream ever relicenses it, `NOTICE` and
-   the two `app/config/libraries/*.json` entries have to follow.
+   the reason the native layer is GPL-3.0-or-later; if upstream ever relicenses it, `NOTICE` and
+   the two `app/config/libraries/*.json` entries have to follow. If it still says v3, that is
+   correct and settled — see "The v3 header is the correction" above before touching anything.
