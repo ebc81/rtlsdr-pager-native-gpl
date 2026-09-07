@@ -166,8 +166,11 @@ static void rtlsdr_callback(unsigned char *buf, uint32_t len, void *ctx)
          * relaxed load and cannot block the USB queue. */
         int sync_count = 0;
         int err_ppm = 0;
-        ebc_multimon_stats(&sync_count, &err_ppm);
-        announce_signal_stat(peak_to_dbfs(g_peak_mag), sync_count, err_ppm);
+        int flex_sync_count = 0;
+        int flex_err_ppm = 0;
+        ebc_multimon_stats(&sync_count, &err_ppm, &flex_sync_count, &flex_err_ppm);
+        announce_signal_stat(peak_to_dbfs(g_peak_mag), sync_count, err_ppm,
+                             flex_sync_count, flex_err_ppm);
         g_peak_mag = 0;
         if (g_ring_drops > 0) {
             /* Not silent: dropped IQ means lost messages, and the user is entitled to know

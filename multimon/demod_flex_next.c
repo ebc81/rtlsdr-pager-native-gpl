@@ -167,6 +167,22 @@ extern int json_mode;
  */
 void announce_pager_message(const char *json);
 
+/*
+ * Reception statistics, defined in multimon_bridge.c (patches F5 and F6).
+ *
+ * They exist because FLEX became able to run WITHOUT POCSAG at v1.5.0. Until then the status
+ * card's sync-word readout was fed entirely by pocsag.c and at least one POCSAG demodulator
+ * was always running, so FLEX could contribute nothing and cost nothing. In a FLEX-only
+ * session that same readout would sit at zero while the decoder worked perfectly -- a healthy
+ * status dot, a moving level meter and a counter that never moves, which is the exact picture
+ * AGENTS.md calls the worst failure this app has.
+ *
+ * Note these are "stat", not "note": ebc_flex_note() a few lines up is the logcat sink for
+ * upstream's housekeeping JSON and has nothing to do with them.
+ */
+void ebc_flex_stat_sync(void);
+void ebc_flex_stat_bch(int ok, int e1, int e2, int uncorr);
+
 static void ebc_flex_emit(const char *json)
 {
     if (json)
@@ -4173,6 +4189,21 @@ page_done:
       case 'D': ph = &flex->Data.PhaseD; break;
     }
     if (ph) {
+#ifdef __EBCANDROID__
+      /*
+       * Patch F6, and it sits outside the json_mode branch below on purpose: multimon_bridge.c
+       * pins json_mode to 1, so anything in the other arm is dead here, and a statistic must
+       * not depend on which output format is selected.
+       *
+       * These four are the closest FLEX equivalent of g_pocsag_sync_words /
+       * g_pocsag_sync_bad_words: their sum is the codewords BCH checked and everything but
+       * bch_0err needed repair. Upstream already keeps them per phase and clears them each
+       * frame, so this reads numbers that were computed anyway. Like the POCSAG pair they only
+       * advance once the decoder is in DATA, so the ratio is not polluted by a search through
+       * noise the way pocsag_brute_repair()'s own counters are.
+       */
+      ebc_flex_stat_bch(ph->bch_0err, ph->bch_1err, ph->bch_2err, ph->bch_uncorr);
+#endif
       int errbits = ph->bch_1err + ph->bch_2err * 2 + ph->bch_uncorr * 3;
       if (!json_mode) {
         verbprintf(1, "FLEX_NEXT|%i/%i|%02i.%03i.%c|BCH|%s|0:%d|1:%d|2:%d|U:%d|errbits:%d\n",
@@ -4458,6 +4489,18 @@ static int read_data(struct Flex_Next * flex, unsigned char sym) {
 static void report_state(struct Flex_Next * flex) {
   if (flex->State.Current != flex->State.Previous) {
     flex->State.Previous = flex->State.Current;
+
+#ifdef __EBCANDROID__
+    /*
+     * Patch F5. SYNC1 -> FIW means the outer sync word was found, which is what the POCSAG loop
+     * in multimon_bridge.c counts as one acquisition on POCSAG_STATE_SYNC_BIT. This function
+     * already fires exactly once per state change, so the edge costs nothing to detect and
+     * there is no equivalent of that state bit to probe from outside -- Flex_State lives behind
+     * the opaque l1.flex_next pointer.
+     */
+    if (flex->State.Current == FLEX_STATE_FIW)
+      ebc_flex_stat_sync();
+#endif
 
     char * state="Unknown";
     switch (flex->State.Current) {

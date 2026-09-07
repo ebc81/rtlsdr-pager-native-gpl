@@ -200,7 +200,8 @@ extern "C" void announce_device_stat(int dev_state)
     clearPendingException(env, "nativeDeviceStat");
 }
 
-extern "C" void announce_signal_stat(int rssi_dbfs, int sync_count, int err_ppm)
+extern "C" void announce_signal_stat(int rssi_dbfs, int sync_count, int err_ppm,
+                                     int flex_sync_count, int flex_err_ppm)
 {
     jclass cls = bridgeClassRef();
     if (!cls)
@@ -210,11 +211,12 @@ extern "C" void announce_signal_stat(int rssi_dbfs, int sync_count, int err_ppm)
     if (!attachThread(&env))
         return;
 
-    jmethodID mid = staticMethod(env, cls, "nativeSignalStat", "(III)V");
+    jmethodID mid = staticMethod(env, cls, "nativeSignalStat", "(IIIII)V");
     if (!mid)
         return;
 
-    env->CallStaticVoidMethod(cls, mid, (jint)rssi_dbfs, (jint)sync_count, (jint)err_ppm);
+    env->CallStaticVoidMethod(cls, mid, (jint)rssi_dbfs, (jint)sync_count, (jint)err_ppm,
+                              (jint)flex_sync_count, (jint)flex_err_ppm);
     clearPendingException(env, "nativeSignalStat");
 }
 

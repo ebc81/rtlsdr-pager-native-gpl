@@ -40,10 +40,28 @@ void ebc_multimon_deinit(void);
  *
  * [sync_count] counts POCSAG sync-word acquisitions since ebc_multimon_init(); [err_ppm] is
  * the share of codewords BCH could not repair over the last second, in parts per million.
- * Both are published by the demodulator thread through atomics, so a reader never has to
- * touch the decoder's state.
+ * [flex_sync_count] and [flex_err_ppm] are the same two quantities for FLEX.
+ *
+ * Per protocol rather than pooled, deliberately: a POCSAG-only session and a FLEX-only session
+ * are both ordinary since v1.5.0, and one combined number could not tell the user which
+ * decoder is actually locking on. The four are published by the demodulator thread through
+ * atomics, so a reader never has to touch the decoder's state.
+ *
+ * Any pointer may be NULL. Four out-parameters rather than a struct because there is exactly
+ * one caller; a third protocol would be the moment to change that, not this one.
  */
-void ebc_multimon_stats(int *sync_count, int *err_ppm);
+void ebc_multimon_stats(int *sync_count, int *err_ppm,
+                        int *flex_sync_count, int *flex_err_ppm);
+
+/**
+ * Statistics hooks called from patched multimon/demod_flex_next.c, on the demodulator thread.
+ *
+ * ebc_flex_stat_sync() marks one sync acquisition; ebc_flex_stat_bch() adds one frame's
+ * per-phase BCH tally, where everything but [ok] needed repair. See patches F5 and F6 in
+ * multimon/PROVENANCE.md.
+ */
+void ebc_flex_stat_sync(void);
+void ebc_flex_stat_bch(int ok, int e1, int e2, int uncorr);
 
 #ifdef __cplusplus
 }

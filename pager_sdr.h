@@ -123,11 +123,16 @@ void announce_device_stat(int dev_state);
 /**
  * Reception quality, emitted about once a second.
  *
- * rssi_dbfs   RF level of the raw IQ, in dBFS (negative; 0 would be a clipping input)
- * sync_count  POCSAG sync words seen since the session started
- * err_ppm     codeword error rate over the last window, in parts per million
+ * rssi_dbfs        RF level of the raw IQ, in dBFS (negative; 0 would be a clipping input)
+ * sync_count       POCSAG sync words seen since the session started
+ * err_ppm          POCSAG codeword error rate over the last window, in parts per million
+ * flex_sync_count  FLEX sync acquisitions since the session started
+ * flex_err_ppm     FLEX codeword error rate over the last window, in parts per million
+ *
+ * The two protocols report separately rather than pooled -- see ebc_multimon_stats().
  */
-void announce_signal_stat(int rssi_dbfs, int sync_count, int err_ppm);
+void announce_signal_stat(int rssi_dbfs, int sync_count, int err_ppm,
+                          int flex_sync_count, int flex_err_ppm);
 
 #ifdef __cplusplus
 }

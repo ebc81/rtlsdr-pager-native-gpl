@@ -112,10 +112,20 @@ Same convention: each one inside `#ifdef __EBCANDROID__`, upstream kept in the `
 
 | # | What | Why |
 |---|---|---|
-| F1 | An `ebc_flex_emit()` / `ebc_flex_note()` pair and an `announce_pager_message()` declaration, beside `extern int json_mode;` | There is no stdout in an Android service. Two helpers rather than one because the eight output sites are two different kinds of thing — see F2 and F3. `pocsag.c`'s `ebc_emit_json()` is `static`, so the pattern is copied rather than shared; promoting it would have meant a ninth patch to `pocsag.c`. |
+| F1 | An `ebc_flex_emit()` / `ebc_flex_note()` pair and an `announce_pager_message()` declaration, beside `extern int json_mode;` (F5 and F6 later added their two declarations to the same block) | There is no stdout in an Android service. Two helpers rather than one because the eight output sites are two different kinds of thing — see F2 and F3. `pocsag.c`'s `ebc_emit_json()` is `static`, so the pattern is copied rather than shared; promoting it would have meant a ninth patch to `pocsag.c`. |
 | F2 | The `fprintf(stdout, …)` at the end of `flex_next_json_emit()` calls `ebc_flex_emit()` | The one site that emits a decoded page, and so the only FLEX caller of the JNI callback. |
 | F3 | The other **seven** `fprintf(stdout, …)` sites call `ebc_flex_note()` | BIW system identity, date, time, timezone and country, an INS instruction word, and per-phase BCH statistics. None is a message; handing them to `MessageRepository` would produce one "unusable decoder output" warning each, several per frame. They go to logcat at verbosity 2 instead. |
 | F4 | `demod_name`, `address` and `bitrate` added at the top of `flex_next_json_emit()`, and `timestamp` replaced by `addJsonTimestamp()` | So both protocols answer to the same four names on the wire and `PagerMessageParser` needs no second shape. `timestamp` is *replaced* rather than duplicated because upstream writes a local-time string while the POCSAG path writes epoch milliseconds, and two types under one key is a trap. Upstream's own `capcode` and `baud` stay where they are. |
+| F5 | `report_state()` calls `ebc_flex_stat_sync()` on the transition into `FLEX_STATE_FIW` | The status card's sync-word readout. SYNC1 → FIW means the outer sync word was found, which is what `multimon_bridge.c` counts as one acquisition on `POCSAG_STATE_SYNC_BIT` for POCSAG — and `report_state()` already fires exactly once per state change, so the edge is free. It has to be *inside* the file: `struct Flex_State` lives behind the opaque `l1.flex_next` pointer, so there is nothing for the bridge to probe from outside. |
+| F6 | The "Per-phase BCH summary" block calls `ebc_flex_stat_bch()` with `bch_0err`, `bch_1err`, `bch_2err` and `bch_uncorr` | The FLEX codeword error rate, the counterpart of patch 8 above. Upstream already keeps these four per phase and clears them each frame, so this reads numbers computed anyway; their sum is the codewords BCH checked and everything but `bch_0err` needed repair. Placed *outside* the `json_mode` branch: the bridge pins `json_mode` to 1, so a statistic in the other arm would be dead code, and a statistic must not depend on the output format. Like the POCSAG counters these advance only once the decoder is in DATA, so no search through noise pollutes the ratio. |
+
+F5 and F6 exist because FLEX became able to run **without** POCSAG at v1.5.0. Until then at
+least one POCSAG demodulator was always running and feeding those two readouts, so FLEX could
+contribute nothing and cost nothing — `multimon_bridge.c` said so in a comment. In a FLEX-only
+session the same readout would sit at zero while the decoder worked perfectly: a healthy status
+dot, a moving level meter and a counter that never moves, which AGENTS.md calls the worst
+failure this app has. The two counters are kept separate from the POCSAG pair rather than
+pooled; `ebc_multimon_stats()` explains why.
 
 The piped, non-JSON output needs no patch: every one of those `verbprintf(0, …)` calls sits
 behind `if (!json_mode)`, and `../multimon_bridge.c` pins `json_mode` to 1. That is worth more
@@ -134,10 +144,13 @@ received content out of the log. **Check it again after a rebase**: a new unguar
    `../multimon_bridge.c` reads it through `POCSAG_STATE_SYNC_BIT` to count sync acquisitions.
 5. Check whether `_verbprintf`, `addJsonTimestamp` or `json_mode` gained siblings that
    `unixinput.c` defines; the link will fail loudly if so, which is the intended outcome.
-6. Re-apply the four `demod_flex_next.c` patches. **Count the `fprintf(stdout` sites rather
+6. Re-apply the six `demod_flex_next.c` patches. **Count the `fprintf(stdout` sites rather
    than trusting the table** — this document predicted four and the file has eight — and
    re-check that every `verbprintf(0, …)` carrying message text is still behind
-   `if (!json_mode)`.
+   `if (!json_mode)`. The anchors for F5 and F6 are `report_state()` and the "Per-phase BCH
+   summary" block at the end of `decode_phase()`; if either moved, the statistics go silent
+   without a compile error, and a FLEX-only session then shows a dead readout for a working
+   receiver.
 7. Re-read `demod_flex_next.c`'s licence header. It is the only GPL-3.0-or-later file here and
    the reason the native layer is GPL-3.0-or-later; if upstream ever relicenses it, `NOTICE` and
    the two `app/config/libraries/*.json` entries have to follow. If it still says v3, that is

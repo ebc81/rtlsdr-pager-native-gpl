@@ -233,6 +233,66 @@ static uint32_t g_base_sync_words = 0;
 static uint32_t g_base_bad_words = 0;
 static int g_window_samples = 0;
 
+/*
+ * The FLEX half of the same two readouts, and it is deliberately a SECOND pair rather than
+ * two more contributors to the pair above.
+ *
+ * Pooling was the cheaper edit and the wrong one. The comment on the POCSAG loop in
+ * pager_audio_sink() explains why the rate switch exists at all: a demodulator that is not
+ * running must not reach g_sync_count, because a number several demodulators feed cannot
+ * answer "is THIS protocol locking on". Letting FLEX add into it would hand back exactly the
+ * sharpness that switch was built to buy -- and in a mixed session, which is the common one,
+ * the pooled number would be unreadable in the one case the user actually needs it.
+ *
+ * The cost is two more ints through ebc_multimon_stats(), announce_signal_stat() and the JNI
+ * callback. The benefit is that g_sync_count and g_err_ppm keep exactly the meaning they had
+ * before FLEX existed, so nothing above them had to be re-reasoned.
+ *
+ * Written by the demodulator thread through the two hooks below, which patched
+ * demod_flex_next.c calls (multimon/PROVENANCE.md, patches F5 and F6).
+ */
+static _Atomic int g_flex_sync_count = 0;
+static _Atomic int g_flex_err_ppm = 0;
+static uint32_t g_flex_words = 0;
+static uint32_t g_flex_bad_words = 0;
+static uint32_t g_base_flex_words = 0;
+static uint32_t g_base_flex_bad_words = 0;
+
+/**
+ * One FLEX sync acquisition, called from report_state() on the transition into FLEX_STATE_FIW.
+ *
+ * The FLEX counterpart of the edge scan the POCSAG loop does on POCSAG_STATE_SYNC_BIT: that
+ * transition means the outer sync word was found, and report_state() already fires exactly
+ * once per state change, so the edge is free.
+ *
+ * Deliberately not gated on g_flex_enabled: the only caller is the demodulator this flag
+ * decides to run at all, so a guard here could only ever be dead code that looks load-bearing.
+ */
+void ebc_flex_stat_sync(void)
+{
+    atomic_fetch_add_explicit(&g_flex_sync_count, 1, memory_order_relaxed);
+}
+
+/**
+ * One frame's per-phase BCH tally, called from the "Per-phase BCH summary" block.
+ *
+ * Maps onto the POCSAG pair as closely as the two protocols allow: [ok] + [e1] + [e2] +
+ * [uncorr] is the codeword count and everything but [ok] needed repair. Upstream already
+ * keeps these four per phase and resets them each frame, so this is a read of numbers that
+ * were being computed anyway.
+ *
+ * Like the POCSAG counters, these only advance while the decoder is in DATA -- there is no
+ * equivalent of pocsag_brute_repair()'s noise search to pollute them, so the ratio means what
+ * it says.
+ */
+void ebc_flex_stat_bch(int ok, int e1, int e2, int uncorr)
+{
+    if (ok < 0 || e1 < 0 || e2 < 0 || uncorr < 0)
+        return;
+    g_flex_words += (uint32_t)ok + (uint32_t)e1 + (uint32_t)e2 + (uint32_t)uncorr;
+    g_flex_bad_words += (uint32_t)e1 + (uint32_t)e2 + (uint32_t)uncorr;
+}
+
 /**
  * Close the error-rate window and publish it.
  *
@@ -259,14 +319,35 @@ static void publish_error_rate(void)
         ppm = (scaled > 1000000ull) ? 1000000 : (int)scaled;
     }
     atomic_store_explicit(&g_err_ppm, ppm, memory_order_relaxed);
+
+    /* The same arithmetic for FLEX, on its own baseline pair. Same window and same call site,
+     * so the two rates are directly comparable in a mixed session. */
+    uint32_t f_words = g_flex_words;
+    uint32_t f_bad = g_flex_bad_words;
+    uint32_t d_f_words = (f_words > g_base_flex_words) ? (f_words - g_base_flex_words) : 0;
+    uint32_t d_f_bad = (f_bad > g_base_flex_bad_words) ? (f_bad - g_base_flex_bad_words) : 0;
+    g_base_flex_words = f_words;
+    g_base_flex_bad_words = f_bad;
+
+    int flex_ppm = 0;
+    if (d_f_words > 0) {
+        uint64_t scaled = (uint64_t)d_f_bad * 1000000ull / (uint64_t)d_f_words;
+        flex_ppm = (scaled > 1000000ull) ? 1000000 : (int)scaled;
+    }
+    atomic_store_explicit(&g_flex_err_ppm, flex_ppm, memory_order_relaxed);
 }
 
-void ebc_multimon_stats(int *sync_count, int *err_ppm)
+void ebc_multimon_stats(int *sync_count, int *err_ppm,
+                        int *flex_sync_count, int *flex_err_ppm)
 {
     if (sync_count)
         *sync_count = atomic_load_explicit(&g_sync_count, memory_order_relaxed);
     if (err_ppm)
         *err_ppm = atomic_load_explicit(&g_err_ppm, memory_order_relaxed);
+    if (flex_sync_count)
+        *flex_sync_count = atomic_load_explicit(&g_flex_sync_count, memory_order_relaxed);
+    if (flex_err_ppm)
+        *flex_err_ppm = atomic_load_explicit(&g_flex_err_ppm, memory_order_relaxed);
 }
 
 /* ---- Lifecycle ----------------------------------------------------------------------- */
@@ -330,13 +411,18 @@ void ebc_multimon_init(const pager_sdr_config_t *cfg)
 
     /*
      * Kotlin validates this too (SdrConfig.validateAndClamp), but repair it here as well and
-     * loudly, the way decode_mode and error_correction above are. A mask that enables nothing is
-     * the nastiest failure this config has: the USB device opens, the level meter moves, every
-     * log line looks healthy, and not one page is ever decoded.
+     * loudly, the way decode_mode and error_correction above are. A session with NO demodulator
+     * at all is the nastiest failure this config has: the USB device opens, the level meter
+     * moves, every log line looks healthy, and not one page is ever decoded.
+     *
+     * The condition is "nothing is running", not "no POCSAG rate is running". An empty mask is
+     * a legal, deliberate state as long as flex_enabled carries the session -- that is FLEX-only
+     * reception, and it is what upstream multimon-ng has always allowed with `-a FLEX_NEXT`
+     * alone. Repairing it would silently start three demodulators the user switched off.
      */
     int rate_mask = cfg->pocsag_rate_mask & POCSAG_RATE_MASK_ALL;
-    if (rate_mask == 0) {
-        LOGW("rate mask 0x%x enables no demodulator, running all %d rates",
+    if (rate_mask == 0 && !cfg->flex_enabled) {
+        LOGW("rate mask 0x%x enables no demodulator and FLEX is off, running all %d rates",
              cfg->pocsag_rate_mask, POCSAG_RATES);
         rate_mask = POCSAG_RATE_MASK_ALL;
     }
@@ -387,13 +473,22 @@ void ebc_multimon_init(const pager_sdr_config_t *cfg)
     g_pocsag_sync_bad_words = 0;
     g_base_sync_words = 0;
     g_base_bad_words = 0;
+    atomic_store_explicit(&g_flex_sync_count, 0, memory_order_relaxed);
+    atomic_store_explicit(&g_flex_err_ppm, 0, memory_order_relaxed);
+    g_flex_words = 0;
+    g_flex_bad_words = 0;
+    g_base_flex_words = 0;
+    g_base_flex_bad_words = 0;
     g_window_samples = 0;
 
     g_active = 1;
     /* Names the enabled demodulators rather than all three: this line is the first thing to
-     * check when a user reports that nothing decodes. */
+     * check when a user reports that nothing decodes. rate_names is empty in a FLEX-only
+     * session, and "decoder ready: , mode=..." would read as a bug in the very line someone
+     * turns to when they suspect one. */
     LOGI("decoder ready: %s%s, mode=%d ec=%d charset=%s partial=%d pruneEmpty=%d rateMask=0x%x",
-         rate_names, g_flex_enabled ? " + FLEX_NEXT" : "", pocsag_mode, pocsag_error_correction,
+         rate_names[0] ? rate_names : "no POCSAG",
+         g_flex_enabled ? " + FLEX_NEXT" : "", pocsag_mode, pocsag_error_correction,
          charset, pocsag_show_partial_decodes, pocsag_prune_empty, rate_mask);
 }
 
@@ -423,8 +518,9 @@ void ebc_multimon_deinit(void)
     if (g_flex_enabled && demod_flex_next.deinit)
         demod_flex_next.deinit(&g_flex_state);
     g_flex_enabled = 0;
-    LOGI("decoder stopped after %d sync acquisitions",
-         atomic_load_explicit(&g_sync_count, memory_order_relaxed));
+    LOGI("decoder stopped after %d POCSAG and %d FLEX sync acquisitions",
+         atomic_load_explicit(&g_sync_count, memory_order_relaxed),
+         atomic_load_explicit(&g_flex_sync_count, memory_order_relaxed));
 }
 
 /* ---- Audio sink ---------------------------------------------------------------------- */
@@ -451,6 +547,10 @@ void pager_audio_sink(const float *samples, int len)
          * together, which is the point: a disabled rate must not reach g_sync_count, and the
          * error-rate counters it would otherwise feed are shared across all three demodulators.
          * Sharpening that readout is most of why this switch exists.
+         *
+         * The same argument is why FLEX has its own g_flex_sync_count instead of adding into
+         * this one. A pooled number cannot answer "is THIS protocol locking on", and a mixed
+         * POCSAG+FLEX session is exactly when that question gets asked.
          */
         if (!g_enabled[i])
             continue;
@@ -473,13 +573,19 @@ void pager_audio_sink(const float *samples, int len)
      * FLEX last, on the same block. buffer_t is passed by value, so this sees the block from
      * the start exactly as each POCSAG demodulator did.
      *
-     * It contributes nothing to g_sync_count or to the error rate, and that is a decision
-     * rather than an omission: FLEX keeps all of its state behind the opaque l1.flex_next
-     * pointer -- there is no l2 slot and no equivalent of POCSAG_STATE_SYNC_BIT to probe --
-     * so counting its sync acquisitions would mean a ninth patch to a vendored file, and
-     * PROVENANCE.md promises everything but pocsag.c is byte-identical to upstream. The
-     * readout stays fed either way: the POCSAG mask can never be empty, so at least one
-     * demodulator is always contributing to it.
+     * It contributes nothing to g_sync_count or to the POCSAG error rate, and reports its own
+     * pair instead -- see the g_flex_sync_count block above for why they are separate.
+     *
+     * There is no sync edge to scan for here the way the POCSAG loop does it: FLEX keeps all of
+     * its state behind the opaque l1.flex_next pointer, with no l2 slot and no equivalent of
+     * POCSAG_STATE_SYNC_BIT to probe. The counters are fed from inside the demodulator instead,
+     * by patches F5 and F6 in multimon/PROVENANCE.md.
+     *
+     * That mattered more once this became load-bearing. Until v1.5.0 the POCSAG mask could
+     * never be empty, so some demodulator was always feeding the readout and a silent FLEX
+     * contribution cost nothing. FLEX-only sessions ended that: without F5 and F6 the status
+     * card would sit at zero sync words for a receiver that is decoding perfectly, which is
+     * the exact picture AGENTS.md calls the worst failure this app has.
      */
     if (g_flex_enabled)
         demod_flex_next.demod(&g_flex_state, buffer, len);
