@@ -99,17 +99,27 @@ the NDK's `__ANDROID__`, so this project's patches stay distinguishable from ord
 platform-conditional upstream code — `grep -rn __EBCANDROID__` lists all of them.
 
 `multimon/PROVENANCE.md` records the exact upstream commit, all eight patches to `pocsag.c` and
-the four to `demod_flex_next.c` with the reasoning for each, and how to rebase onto a newer
+the six to `demod_flex_next.c` with the reasoning for each, and how to rebase onto a newer
 upstream. Two of the `pocsag.c` patches fix upstream memory bugs that only matter to a
 long-running process: a `cJSON` object shared between output branches and deleted in each (a
 double free reachable in `POCSAG_MODE_AUTO`), and a leaked print buffer.
 
-The FLEX patches are output routing, and the shape of them is worth knowing before a rebase:
-upstream has **eight** `fprintf(stdout, …)` sites in `demod_flex_next.c`, and only one of them —
-at the end of `flex_next_json_emit()` — is a decoded page. The other seven are network
+Four of the FLEX patches are output routing, and the shape of them is worth knowing before a
+rebase: upstream has **eight** `fprintf(stdout, …)` sites in `demod_flex_next.c`, and only one of
+them — at the end of `flex_next_json_emit()` — is a decoded page. The other seven are network
 housekeeping (BIW system identity, date, time, timezone, country, an INS instruction word,
 per-phase BCH statistics) and are routed to the Android log instead. Count them again after a
 rebase rather than trusting this paragraph.
+
+The other two are statistics, added in v1.5.0 when FLEX became able to run **without** POCSAG:
+`report_state()` reports each sync acquisition and the per-phase BCH summary reports each frame's
+codeword tally, so the app has a sync count and a codeword error rate for FLEX. Until then at
+least one POCSAG demodulator was always running and feeding those two readouts from `pocsag.c`,
+so FLEX could contribute nothing and cost nothing. They have to live inside this file:
+`struct Flex_State` sits behind the opaque `l1.flex_next` pointer, so there is no equivalent of
+`POCSAG_STATE_SYNC_BIT` for `multimon_bridge.c` to probe from outside. The two counters are kept
+separate from the POCSAG pair rather than pooled — a pooled number cannot say which protocol is
+locking on, which is the whole question in a mixed session.
 
 ## Building
 
