@@ -22,7 +22,7 @@ anyone who receives the app binary is entitled to the source of these components
 > The shared SDR base — librtlsdr, the libusb Android port and the file-descriptor bridge — moved
 > to its own project, shared with the other EBC radio apps:
 >
-> **<https://github.com/ebc81/ebc-sdr-native>**, pinned by the app at tag **`v0.3.0`**.
+> **<https://github.com/ebc81/ebc-sdr-native>**, pinned by the app at tag **`v0.4.0`**.
 >
 > In the app's tree that project sits at `app/src/main/cpp/ebc-sdr-native` as a git submodule. It
 > is deliberately **not** copied in here: mirroring it would republish the same GPL code at a
@@ -49,7 +49,7 @@ native components named under **Licensing** below.
 | `pager_dsp.c/.h` | IQ → audio: lock-free ring buffer, /64 CIC decimation with droop compensation, FM discriminator, DC blocker |
 | `multimon_bridge.c/.h` | the host glue multimon-ng expects from its main program (upstream's `unixinput.c`), plus the demodulator states — three for POCSAG, one for FLEX — and the audio sink |
 | `multimon/` | multimon-ng's POCSAG and FLEX decoders — see `multimon/PROVENANCE.md` |
-| *(not here)* | librtlsdr, the libusb Android port and `rtlsdr_open2(dev, fd)` live in [`ebc-sdr-native`](https://github.com/ebc81/ebc-sdr-native) @ `v0.3.0`, which `CMakeLists.txt` pulls in with `add_subdirectory(ebc-sdr-native)` |
+| *(not here)* | librtlsdr, the libusb Android port and `rtlsdr_open2(dev, fd)` live in [`ebc-sdr-native`](https://github.com/ebc81/ebc-sdr-native) @ `v0.4.0`, which `CMakeLists.txt` pulls in with `add_subdirectory(ebc-sdr-native)` |
 
 ## Signal path
 
@@ -138,7 +138,7 @@ Gradle Plugin's CMake integration, for `arm64-v8a`, `armeabi-v7a`, `x86` and `x8
 
 **To build this tree you need `ebc-sdr-native` beside it.** `CMakeLists.txt` calls
 `add_subdirectory(ebc-sdr-native)` and links the static library `ebc_sdr`, so clone
-<https://github.com/ebc81/ebc-sdr-native> at tag `v0.3.0` into a directory of that name here
+<https://github.com/ebc81/ebc-sdr-native> at tag `v0.4.0` into a directory of that name here
 first. Then point a CMake toolchain file at the NDK and pass the definitions above;
 `CMakeLists.txt` needs no Gradle-provided variables beyond the standard Android toolchain ones.
 Include paths, compile options and linker flags for the SDR base come from that subproject.
