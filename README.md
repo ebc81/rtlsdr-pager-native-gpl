@@ -33,6 +33,7 @@ anyone who receives the app binary is entitled to the source of these components
 The app itself decodes POCSAG pager messages at 512, 1200 and 2400 bit/s, and FLEX at 1600,
 3200 and 6400 bit/s, from an RTL-SDR USB dongle connected to an Android device over USB-OTG. It
 is receive-only, and all decoding happens on the device — there is no server component.
+It is available on [Google Play](https://play.google.com/store/apps/details?id=eu.ebctech.pagerdecoder); the product page is <https://ebctech.eu/rtl-sdr-pager/>.
 
 This tree contains **only** the C/C++ layer. **The proprietary Kotlin application layer (UI,
 billing, service logic), along with the app's resources and build system, is NOT included here
